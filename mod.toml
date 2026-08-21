@@ -2,8 +2,8 @@
 
 [manifest]
 id = "sssv_coop"
-version = "0.1.0"
-display_name = "SSSV Co-op (Phase 0: Link Test)"
+version = "0.2.0"
+display_name = "SSSV Co-op (Phase 1: Presence)"
 description = """
 Phase 0 of the SSSV co-op mod: establishes the network link between two \
 copies of the game over LAN, Radmin, or any IP network. No gameplay is \

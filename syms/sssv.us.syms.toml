@@ -848,6 +848,7 @@ functions = [
     { name = "func_802C7B18_6D91C8", vram = 0x802C7B18, size = 0x9C },
     { name = "func_802C7BB4_6D9264", vram = 0x802C7BB4, size = 0xC4 },
     { name = "func_802C7C80_6D9330", vram = 0x802C7C80, size = 0x308 },
+    { name = "spawn_animal", vram = 0x802C7F88, size = 0x444 },
     { name = "func_802C83CC_6D9A7C", vram = 0x802C83CC, size = 0x68 },
     { name = "init_and_spawn_evo_microchip", vram = 0x802C8440, size = 0x1AC },
     { name = "func_802C85EC_6D9C9C", vram = 0x802C85EC, size = 0x1F4 },

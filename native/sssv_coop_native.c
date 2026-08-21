@@ -60,9 +60,11 @@ typedef struct {
         r24, r25, r26, r27, r28, r29, r30, r31;
 } recomp_context;
 
-// Byte load from emulated RDRAM (addresses are XOR'd for sub-word access).
+// Sub-word loads/stores in emulated RDRAM use XOR'd addressing.
 #define MEM_B(offset, reg) \
     (*(int8_t*)(rdram + ((((reg) + (offset)) ^ 3) - 0xFFFFFFFF80000000ull)))
+#define MEM_H(offset, reg) \
+    (*(int16_t*)(rdram + ((((reg) + (offset)) ^ 2) - 0xFFFFFFFF80000000ull)))
 
 // --------------------------------------------------------------------------
 // Protocol
@@ -70,7 +72,13 @@ typedef struct {
 #define COOP_MAGIC   0x5353434Fu  /* 'SSCO' */
 #define COOP_VERSION 0
 
-enum { MSG_HELLO = 1, MSG_WELCOME = 2, MSG_PING = 3, MSG_PONG = 4 };
+enum { MSG_HELLO = 1, MSG_WELCOME = 2, MSG_PING = 3, MSG_PONG = 4, MSG_STATE = 6 };
+
+#pragma pack(push, 1)
+typedef struct {
+    int16_t level, species, x, z, y, heading, yrot;
+} StatePayload;
+#pragma pack(pop)
 
 #pragma pack(push, 1)
 typedef struct {
@@ -101,6 +109,8 @@ static int    g_status = CST_OFF;
 static int    g_have_peer = 0;
 static struct sockaddr_in g_peer;
 static double g_last_rx = 0.0;
+static StatePayload g_peer_state;
+static double g_peer_state_time = -1.0;   // <0 = never received
 static double g_last_tx = 0.0;
 static int    g_wsa_init = 0;
 
@@ -174,6 +184,7 @@ static void net_teardown(void) {
     }
     g_have_peer = 0;
     g_status = CST_OFF;
+    g_peer_state_time = -1.0;
 }
 
 static void send_msg(uint8_t type, const struct sockaddr_in* to) {
@@ -184,6 +195,19 @@ static void send_msg(uint8_t type, const struct sockaddr_in* to) {
     h.reserved = 0;
     sendto(g_sock, (const char*)&h, sizeof(h), 0,
            (const struct sockaddr*)to, sizeof(*to));
+    g_last_tx = now_seconds();
+}
+
+static void send_state(const StatePayload* st) {
+    char buf[sizeof(PacketHeader) + sizeof(StatePayload)];
+    PacketHeader* h = (PacketHeader*)buf;
+    h->magic = COOP_MAGIC;
+    h->version = COOP_VERSION;
+    h->type = MSG_STATE;
+    h->reserved = 0;
+    memcpy(buf + sizeof(PacketHeader), st, sizeof(StatePayload));
+    sendto(g_sock, buf, sizeof(buf), 0,
+           (const struct sockaddr*)&g_peer, sizeof(g_peer));
     g_last_tx = now_seconds();
 }
 
@@ -292,6 +316,13 @@ static void net_pump(void) {
                 g_last_rx = t;
             }
             break;
+        case MSG_STATE:
+            if (g_have_peer && (size_t)n >= sizeof(PacketHeader) + sizeof(StatePayload)) {
+                memcpy(&g_peer_state, buf + sizeof(PacketHeader), sizeof(StatePayload));
+                g_peer_state_time = t;
+                g_last_rx = t;
+            }
+            break;
         default:
             break;
         }
@@ -310,6 +341,7 @@ static void net_pump(void) {
     if (g_have_peer && (t - g_last_rx > PEER_TIMEOUT_S)) {
         coop_log("TIMEOUT: no packets from peer for %.0fs, dropping", PEER_TIMEOUT_S);
         g_have_peer = 0;
+        g_peer_state_time = -1.0;
         g_status = (g_mode == MODE_HOST) ? CST_LISTENING : CST_CONNECTING;
     }
 }
@@ -327,6 +359,7 @@ EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
     int mode = (int)(int32_t)ctx->r4;
     gpr ip_addr = ctx->r5;
     int port = (int)(int32_t)ctx->r6;
+    gpr io = ctx->r7;
 
     char ip[64];
     int i;
@@ -374,5 +407,37 @@ EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
     }
 
     net_pump();
+
+    if (io != 0) {
+        // Outgoing: send our state every frame while connected.
+        if (g_have_peer && MEM_H(0x0, io) != 0) {
+            StatePayload st;
+            st.level   = MEM_H(0x2,  io);
+            st.species = MEM_H(0x4,  io);
+            st.x       = MEM_H(0x6,  io);
+            st.z       = MEM_H(0x8,  io);
+            st.y       = MEM_H(0xA,  io);
+            st.heading = MEM_H(0xC,  io);
+            st.yrot    = MEM_H(0xE,  io);
+            send_state(&st);
+        }
+        // Incoming: latest peer state + age in frames (999 = none).
+        {
+            int age = 999;
+            if (g_have_peer && g_peer_state_time >= 0.0) {
+                double a = (now_seconds() - g_peer_state_time) * 30.0;
+                age = (a < 0) ? 0 : (a > 999 ? 999 : (int)a);
+            }
+            MEM_H(0x10, io) = (int16_t)age;
+            MEM_H(0x12, io) = g_peer_state.level;
+            MEM_H(0x14, io) = g_peer_state.species;
+            MEM_H(0x16, io) = g_peer_state.x;
+            MEM_H(0x18, io) = g_peer_state.z;
+            MEM_H(0x1A, io) = g_peer_state.y;
+            MEM_H(0x1C, io) = g_peer_state.heading;
+            MEM_H(0x1E, io) = g_peer_state.yrot;
+        }
+    }
+
     ctx->r2 = (gpr)(int32_t)g_status;
 }
