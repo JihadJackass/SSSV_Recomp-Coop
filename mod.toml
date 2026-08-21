@@ -1,18 +1,21 @@
-# SSSV Co-op - Phase 0 (connection scaffold) manifest.
+# SSSV Co-op manifest.
 
 [manifest]
 id = "sssv_coop"
-version = "0.2.4"
-display_name = "SSSV Co-op (Phase 1: Presence)"
+version = "1.0.3"
+display_name = "SSSV Co-op"
 description = """
-Phase 0 of the SSSV co-op mod: establishes the network link between two \
-copies of the game over LAN, Radmin, or any IP network. No gameplay is \
-synced yet. Configure one machine as Host and the other as Join (with the \
-host's IP), then get in-game on both. You'll hear a menu 'up' chirp on both \
-machines when the link is established, and a 'down' chirp if it drops. \
-The link auto-reconnects; nothing is ever fatal."""
-short_description = "Co-op groundwork: network link test with audible connect chirp."
-authors = [ "you" ]
+Two-player online co-op for Space Station Silicon Valley. Each player runs \
+their own copy of the game; when both are in the same level, the other \
+player appears in your world as their currently possessed animal, synced in \
+real time. Possession-aware (their ghost changes species when they take a \
+new animal, and vanishes while they are the EVO soul), safe with level \
+objectives (ghosts use a free animal slot, never existing animals), and \
+self-healing over LAN, Radmin VPN, or any IP network. One player hosts, the \
+other joins with the host's IP; both settings live in this Configure menu. \
+The host's firewall must allow inbound UDP on the chosen port."""
+short_description = "Two-player online co-op: see each other in the same level, LAN or Radmin."
+authors = [ "JihadiJackassStudios" ]
 
 game_id = "sssv"
 minimum_recomp_version = "0.1.2"
