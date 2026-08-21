@@ -1,0 +1,65 @@
+# SSSV Co-op - Phase 0 (connection scaffold) manifest.
+
+[manifest]
+id = "sssv_coop"
+version = "0.1.0"
+display_name = "SSSV Co-op (Phase 0: Link Test)"
+description = """
+Phase 0 of the SSSV co-op mod: establishes the network link between two \
+copies of the game over LAN, Radmin, or any IP network. No gameplay is \
+synced yet. Configure one machine as Host and the other as Join (with the \
+host's IP), then get in-game on both. You'll hear a menu 'up' chirp on both \
+machines when the link is established, and a 'down' chirp if it drops. \
+The link auto-reconnects; nothing is ever fatal."""
+short_description = "Co-op groundwork: network link test with audible connect chirp."
+authors = [ "you" ]
+
+game_id = "sssv"
+minimum_recomp_version = "0.1.2"
+
+dependencies = [ ]
+optional_dependencies = [ ]
+
+native_libraries = [
+    { name = "sssv_coop_native", funcs = ["SSSVCoop_Update"] }
+]
+
+[inputs]
+elf_path = "build/mod.elf"
+mod_filename = "sssv_coop"
+
+func_reference_syms_file = "syms/sssv.us.syms.toml"
+data_reference_syms_files = [ "syms/sssv.us.datasyms.toml" ]
+
+additional_files = [ ]
+
+# ---------------------------------------------------------------------------
+# Configure menu
+# ---------------------------------------------------------------------------
+
+[[manifest.config_options]]
+id = "mode"
+name = "Mode"
+description = "Off disables networking entirely. One player picks Host, the other picks Join."
+type = "Enum"
+options = [ "Off", "Host", "Join" ]
+default = "Off"
+
+[[manifest.config_options]]
+id = "host_ip"
+name = "Host IP address"
+description = "Join mode only: the host machine's IP. LAN example: 192.168.1.50. With Radmin VPN, use the host's Radmin IP (usually 26.x.x.x)."
+type = "String"
+default = "192.168.1.50"
+
+[[manifest.config_options]]
+id = "port"
+name = "UDP port"
+description = "Must match on both machines. The host's firewall must allow inbound UDP on this port."
+type = "Number"
+min = 1024
+max = 65535
+step = 1
+precision = 0
+percent = false
+default = 7642
