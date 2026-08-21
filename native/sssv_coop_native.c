@@ -173,7 +173,7 @@ static void coop_log(const char* fmt, ...) {
 #if defined(_WIN32) || defined(__GNUC__)
 __attribute__((constructor))
 static void coop_on_load(void) {
-    coop_log("=== sssv_coop_native loaded (build: phase0-diag2) ===");
+    coop_log("=== sssv_coop_native loaded (build: phase1-v0.2.4) ===");
 }
 #endif
 
@@ -353,6 +353,21 @@ static void net_pump(void) {
 //   a2 (r6) = port
 // Returns status in v0 (r2).
 // --------------------------------------------------------------------------
+static const char* dbg_tag_name(int t) {
+    switch (t) {
+    case 1: return "ghost_slot"; case 2: return "ghost_mode";
+    case 3: return "ghost_x"; case 4: return "ghost_y";
+    case 10: return "SPAWN slot"; case 11: return "DESPAWN slot";
+    case 12: return "TELEPORT slot"; case 13: return "species";
+    default: return "?";
+    }
+}
+
+EXPORT void SSSVCoop_Debug(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    coop_log("DBG %s = %d", dbg_tag_name((int)(int32_t)ctx->r4), (int)(int32_t)ctx->r5);
+}
+
 EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
     static int first_call = 1;
     static double last_summary = 0.0;

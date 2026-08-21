@@ -2,7 +2,7 @@
 
 [manifest]
 id = "sssv_coop"
-version = "0.2.0"
+version = "0.2.4"
 display_name = "SSSV Co-op (Phase 1: Presence)"
 description = """
 Phase 0 of the SSSV co-op mod: establishes the network link between two \
@@ -21,7 +21,7 @@ dependencies = [ ]
 optional_dependencies = [ ]
 
 native_libraries = [
-    { name = "sssv_coop_native", funcs = ["SSSVCoop_Update"] }
+    { name = "sssv_coop_native", funcs = ["SSSVCoop_Update", "SSSVCoop_Debug"] }
 ]
 
 [inputs]
