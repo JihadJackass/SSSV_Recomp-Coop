@@ -359,6 +359,8 @@ static const char* dbg_tag_name(int t) {
     case 3: return "ghost_x"; case 4: return "ghost_y";
     case 10: return "SPAWN slot"; case 11: return "DESPAWN slot";
     case 12: return "TELEPORT slot"; case 13: return "species";
+    case 14: return "GHOST KILLED, engine mode";
+    case 15: return "CORPSE CLEANED, slot";
     default: return "?";
     }
 }

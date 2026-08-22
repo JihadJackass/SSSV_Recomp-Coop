@@ -130,6 +130,7 @@ extern s32  sample_ground_height_at_xz(s16 x, s16 z);
 extern s32  func_80310F58_722608(s16 x, s16 z);        // water level probe
 extern void func_802B2EA8_6C4558(void);                // context-based init
 extern void func_802DADA0_6EC450(Animal* a);           // collision/cell registration
+extern void remove_collision_list(Animal* a);          // cell UNregistration
 extern s16  load_dynamic_tail(s16 id);
 extern void func_802C9BA4_6DB254(Animal* a);           // per-animal init
 
@@ -258,6 +259,9 @@ static s32  ghost_slot = -1;
 static s16  ghost_species = -1;
 static s16  pending_species = -1;   // species-change damping
 static s16  pending_frames = 0;
+static s16  respawn_cooldown = 0;   // frames until a new spawn is allowed
+static s32  dying_slot = -1;        // corpse cleanup tracking
+static s16  dying_timer = 0;
 static s16  last_level = -1;
 static char cached_ip[64] = "";
 static s32  cached_mode = 0;
@@ -284,14 +288,20 @@ static void ghost_forget(void) {
     ghost_species = -1;
 }
 
-// Actively remove the ghost using the game's own free-slot convention.
+// Actively remove the ghost using the game's own deletion protocol:
+// unlink its collision nodes FIRST (the register function wipes nodes in
+// place, so a later slot reuse would orphan live chain links -- the cause of
+// the possession-switch crash), then mark the slot deleted, then hold a
+// cooldown so the engine sweeps the corpse before we recycle the slot.
 static void ghost_despawn(void) {
     if (ghost_slot >= 0 && ghost_slot < gNumAnimalsInLevel &&
         gAnimalState.animals[ghost_slot].animal == &gAnimalState.animalPool[ghost_slot]) {
+        remove_collision_list(&gAnimalState.animalPool[ghost_slot]);
         gAnimalState.animalPool[ghost_slot].movementMode = MOVEMENT_MODE_DELETED;
         SSSVCoop_Debug(11, ghost_slot);       // despawn event
     }
     ghost_forget();
+    if (respawn_cooldown < 20) respawn_cooldown = 20;
 }
 
 // A species is safe to spawn only if it's a normal animal id -- the EVO
@@ -332,6 +342,30 @@ void coop_frame_update(void) {
 
     if ((frame_counter % 30) == 0) refresh_config();
     frame_counter++;
+    if (respawn_cooldown > 0) respawn_cooldown--;
+
+    // ---- Corpse cleanup ---------------------------------------------------
+    // A killed ghost's death sequence may stall partway (its AI state is
+    // ours, not the game's), leaving a lingering possessable husk that leaks
+    // an animal slot per kill. Give the sequence time to explode and score,
+    // then finish the deletion with the safe despawn protocol. NEVER touch
+    // the slot if a player has possessed the body in the meantime.
+    if (dying_slot >= 0) {
+        if (dying_slot >= gNumAnimalsInLevel ||
+            gAnimalState.animals[dying_slot].animal != &gAnimalState.animalPool[dying_slot] ||
+            gAnimalState.animalPool[dying_slot].movementMode == MOVEMENT_MODE_DELETED) {
+            dying_slot = -1;  // engine cleaned it up itself (or level reset)
+        } else if (dying_slot == gCurrentAnimalIndex) {
+            dying_slot = -1;  // a player possessed the corpse: hands off forever
+        } else if (dying_timer > 0) {
+            dying_timer--;
+        } else {
+            remove_collision_list(&gAnimalState.animalPool[dying_slot]);
+            gAnimalState.animalPool[dying_slot].movementMode = MOVEMENT_MODE_DELETED;
+            SSSVCoop_Debug(15, dying_slot);   // corpse cleanup event
+            dying_slot = -1;
+        }
+    }
 
     // ---- Gather own state -------------------------------------------------
     own_level = gGameState.level;
@@ -365,6 +399,7 @@ void coop_frame_update(void) {
     if (own_level != last_level) {
         last_level = own_level;
         ghost_forget();
+        dying_slot = -1;
     }
 
     // ---- Decide whether the ghost should exist ----------------------------
@@ -400,6 +435,7 @@ void coop_frame_update(void) {
         Animal2* e;
         Animal2* save20; void* save24; Animal *save28, *save2C, *save30;
         s16 save38, save3A, save3C;
+        if (respawn_cooldown > 0) return;  // let the engine sweep first
         ghost_forget();
         if (gNumAnimalsInLevel >= 49) return;  // no room; try again later
         save20 = D_803D5520; save24 = D_803D5524; save28 = D_803D5528;
@@ -415,6 +451,22 @@ void coop_frame_update(void) {
         SSSVCoop_Debug(10, ghost_slot);       // spawn event
         SSSVCoop_Debug(13, ghost_species);
         if (!ghost_valid()) { ghost_forget(); return; }
+    }
+
+    // ---- Death handoff ----------------------------------------------------
+    // If the engine changed the ghost's state under us (someone killed it),
+    // stop driving and let the death sequence complete naturally. Forcing
+    // the mode back to INJURED every frame kept the kill from ever
+    // finishing, which made the score award repeat endlessly. The engine
+    // deletes the slot itself when the sequence ends; we respawn afterward.
+    g = &gAnimalState.animalPool[ghost_slot];
+    if (g->health <= 0 || g->movementMode != MOVEMENT_MODE_INJURED) {
+        SSSVCoop_Debug(14, g->movementMode);  // ghost death/handoff event
+        dying_slot = ghost_slot;              // watch the corpse for cleanup
+        dying_timer = 150;                    // ~5s: let the death play out
+        ghost_forget();
+        if (respawn_cooldown < 90) respawn_cooldown = 90;  // ~3s
+        return;
     }
 
     // ---- Drive the ghost from peer state ----------------------------------
@@ -437,7 +489,14 @@ void coop_frame_update(void) {
 
         if (dx > thresh || dx < -thresh || dz > thresh || dz < -thresh ||
             dy > thresh || dy < -thresh) {
-            // Peer warped: hard place + re-register collision cells.
+            // Peer warped: hard place, then UNLINK from the collision cell
+            // chains before re-registering -- the register function wipes the
+            // animal's chain nodes in place, so calling it while still linked
+            // orphans live list links. Broken chains that fault were the
+            // earlier crashes; broken chains that cycle were the host
+            // lockups under heavy movement. The game's own deletion path
+            // (remove_collision_list before relist) is the correct protocol.
+            remove_collision_list(g);
             g->xPos = tx; g->zPos = tz; g->yPos = ty;
             g->newXPos = tx; g->newZPos = tz; g->newYPos = ty;
             g->xVelocity = 0; g->zVelocity = 0; g->yVelocity = 0;

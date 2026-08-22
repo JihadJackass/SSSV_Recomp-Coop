@@ -8,10 +8,8 @@ LAN, Radmin VPN, or any IP network.
 
 Made for playing with a friend; both players need their own legally obtained copy of the game.
 
-<img width="829" height="500" alt="image" src="https://github.com/user-attachments/assets/7314a377-d8cb-4686-94b2-b57242b0fe17" />
 
-## Current state 
-presence co-op is working. You see each other move through
+**Current state:** presence co-op is working. You see each other move through
 the level in real time, each playing your own copy of the mission and
 coordinating however you like. Animation sync (so the other player walks and
 jumps properly instead of gliding), host-selected missions, and shared world
