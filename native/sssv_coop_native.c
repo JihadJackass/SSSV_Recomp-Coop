@@ -70,13 +70,14 @@ typedef struct {
 // Protocol
 // --------------------------------------------------------------------------
 #define COOP_MAGIC   0x5353434Fu  /* 'SSCO' */
-#define COOP_VERSION 0
+#define COOP_VERSION 1  // proto v1: pose bundle added; incompatible with v0 builds
 
 enum { MSG_HELLO = 1, MSG_WELCOME = 2, MSG_PING = 3, MSG_PONG = 4, MSG_STATE = 6 };
 
 #pragma pack(push, 1)
 typedef struct {
     int16_t level, species, x, z, y, heading, yrot;
+    uint16_t pose[37];
 } StatePayload;
 #pragma pack(pop)
 
@@ -173,7 +174,7 @@ static void coop_log(const char* fmt, ...) {
 #if defined(_WIN32) || defined(__GNUC__)
 __attribute__((constructor))
 static void coop_on_load(void) {
-    coop_log("=== sssv_coop_native loaded (build: phase1-v0.2.4) ===");
+    coop_log("=== sssv_coop_native loaded (build: phase2-v1.1.0) ===");
 }
 #endif
 
@@ -356,6 +357,7 @@ static void net_pump(void) {
 static const char* dbg_tag_name(int t) {
     switch (t) {
     case 1: return "ghost_slot"; case 2: return "ghost_mode";
+    case 5: return "peer_species"; case 6: return "peer_level";
     case 3: return "ghost_x"; case 4: return "ghost_y";
     case 10: return "SPAWN slot"; case 11: return "DESPAWN slot";
     case 12: return "TELEPORT slot"; case 13: return "species";
@@ -436,6 +438,12 @@ EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
             st.y       = MEM_H(0xA,  io);
             st.heading = MEM_H(0xC,  io);
             st.yrot    = MEM_H(0xE,  io);
+            {
+                int k;
+                for (k = 0; k < 37; k++) {
+                    st.pose[k] = (uint16_t)MEM_H(0x20 + 2*k, io);  // io[16+k]
+                }
+            }
             send_state(&st);
         }
         // Incoming: latest peer state + age in frames (999 = none).
@@ -453,6 +461,12 @@ EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
             MEM_H(0x1A, io) = g_peer_state.y;
             MEM_H(0x1C, io) = g_peer_state.heading;
             MEM_H(0x1E, io) = g_peer_state.yrot;
+            {
+                int k;
+                for (k = 0; k < 37; k++) {
+                    MEM_H(0x70 + 2*k, io) = (int16_t)g_peer_state.pose[k];  // io[56+k]
+                }
+            }
         }
     }
 

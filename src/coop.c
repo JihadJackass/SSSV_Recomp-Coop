@@ -66,15 +66,21 @@ typedef struct Animal {
     /* 0x2F4 */ u16 unk2F4;
     /* 0x2F6 */ u16 gaitPhaseOffset;
     /* 0x2F8 */ u16 prevGaitPhaseOffset;
-    /* 0x2FA */ u8  pad2FA[0x302 - 0x2FA];
+    /* 0x2FA */ u16 unk2FA;           // gait divisor: MUST be nonzero
+    /* 0x2FC */ u8  pad2FC[0x302 - 0x2FC];
     /* 0x302 */ s16 heading;
     /* 0x304 */ s16 previousHeading;
     /* 0x306 */ u8  pad306[0x31A - 0x306];
     /* 0x31A */ s16 unk31A;
     /* 0x31C */ s32 unk31C;         // spawn timestamp
-    /* 0x320 */ u8  pad320[0x366 - 0x320];
+    /* 0x320 */ u8  pad320[0x365 - 0x320];
+    /* 0x365 */ u8  unk365;           // current attack
     /* 0x366 */ u8  movementMode;
-    /* 0x367 */ u8  pad367[0x3CA - 0x367];
+    /* 0x367 */ u8  pad367[0x36C - 0x367];
+    /* 0x36C */ u8  unk36C;
+    /* 0x36D */ u8  pad36D;
+    /* 0x36E */ s8  unk36E;
+    /* 0x36F */ u8  pad36F[0x3CA - 0x36F];
     /* 0x3CA */ s16 tailIndex;      // unk3C8.unk2 = load_dynamic_tail(id)
     /* 0x3CC */ u8  pad3CC[0x3D4 - 0x3CC];
 } Animal;
@@ -90,7 +96,11 @@ _Static_assert(__builtin_offsetof(Animal, energy0) == 0x2E0, "energy0 off");
 _Static_assert(__builtin_offsetof(Animal, gaitPhase) == 0x2F2, "gaitPhase off");
 _Static_assert(__builtin_offsetof(Animal, heading) == 0x302, "heading off");
 _Static_assert(__builtin_offsetof(Animal, unk31A) == 0x31A, "unk31A off");
+_Static_assert(__builtin_offsetof(Animal, unk2FA) == 0x2FA, "unk2FA off");
+_Static_assert(__builtin_offsetof(Animal, unk365) == 0x365, "unk365 off");
 _Static_assert(__builtin_offsetof(Animal, movementMode) == 0x366, "movementMode off");
+_Static_assert(__builtin_offsetof(Animal, unk36C) == 0x36C, "unk36C off");
+_Static_assert(__builtin_offsetof(Animal, unk36E) == 0x36E, "unk36E off");
 _Static_assert(__builtin_offsetof(Animal, tailIndex) == 0x3CA, "tailIndex off");
 
 typedef struct {
@@ -133,6 +143,8 @@ extern void func_802DADA0_6EC450(Animal* a);           // collision/cell registr
 extern void remove_collision_list(Animal* a);          // cell UNregistration
 extern s16  load_dynamic_tail(s16 id);
 extern void func_802C9BA4_6DB254(Animal* a);           // per-animal init
+extern void spawn_dizzy_stars_big(void);               // context-driven effect
+extern void (*behaviour_lut[])(void);                  // species behavior table
 
 extern Animal2* D_803D5520;   // current entry being processed
 extern void*    D_803D5524;   // its species data
@@ -248,13 +260,26 @@ RECOMP_IMPORT(".", s32 SSSVCoop_Update(s32 mode, char* ip, s32 port, s16* io));
 RECOMP_IMPORT(".", void SSSVCoop_Debug(s32 tag, s32 value));
 
 #define COOP_STATUS_CONNECTED 3
+
+// Pose sync: raw copy of the Animal struct range 0x2E8..0x32C (34 u16 words:
+// missile display state, the whole gait/walk-cycle cluster incl. the 0x2FA
+// divisor, heading, and the head/ear/tail pose fields the per-species render
+// functions read), plus 3 packed words: [34]=state, [35]=movementState |
+// attack<<8, [36]=unk36C | unk36E<<8. movementMode, health, aiFlags,
+// position, and velocity are deliberately NOT in the blob -- those belong to
+// the ghost lifecycle and motion systems.
+#define POSE_BLOB_OFF   0x2E8
+#define POSE_BLOB_WORDS 34
+#define POSE_WORDS      37
+#define IO_OWN_POSE     16
+#define IO_PEER_POSE    56
 #define IO_OWN_VALID   0
 #define IO_OWN_LEVEL   1
 #define IO_PEER_AGE    8
 #define IO_PEER_LEVEL  9
 #define PEER_STALE_FRAMES 60   // 2 seconds without peer state = hide ghost
 
-static s16  io[20];
+static s16  io[96];
 static s32  ghost_slot = -1;
 static s16  ghost_species = -1;
 static s16  pending_species = -1;   // species-change damping
@@ -279,6 +304,23 @@ static void refresh_config(void) {
         cached_ip[i] = '\0';
         recomp_free_config_string(ip);
     }
+}
+
+// The game's behavior dispatch is this one tiny wrapper (behaviours.c):
+// it stores its argument in a file-static and calls the species' behavior.
+// We replace it verbatim, with one addition: when the animal being processed
+// is our ghost, skip the behavior call entirely. This lets the ghost run in
+// NORMAL movement mode (required for correct rendering and the walk-cycle
+// pipeline) while its AI never executes. Everything else is byte-identical
+// vanilla. 0x803F63F0 is ratBehaviorMode, the wrapper's file-static (from
+// the decomp's bss map; not in the port's data symbols).
+RECOMP_PATCH void func_80389764_79AE14(u8 arg0) {
+    *(s16*)0x803F63F0 = arg0;
+    if (ghost_slot >= 0 &&
+        D_803D5520 == &gAnimalState.animals[ghost_slot]) {
+        return;  // ghost: no behavior
+    }
+    behaviour_lut[*(u16*)((u8*)D_803D5524 + 0x9C)]();
 }
 
 // Forget the ghost without touching game memory (used when the world was
@@ -360,8 +402,20 @@ void coop_frame_update(void) {
         } else if (dying_timer > 0) {
             dying_timer--;
         } else {
-            remove_collision_list(&gAnimalState.animalPool[dying_slot]);
-            gAnimalState.animalPool[dying_slot].movementMode = MOVEMENT_MODE_DELETED;
+            Animal2* save20; void* save24; Animal *save28, *save2C, *save30;
+            Animal* corpse = &gAnimalState.animalPool[dying_slot];
+            // A little send-off so the body doesn't just blink out: run the
+            // context-driven dizzy-stars effect at the corpse, then delete.
+            save20 = D_803D5520; save24 = D_803D5524; save28 = D_803D5528;
+            save2C = D_803D552C; save30 = D_803D5530;
+            D_803D5520 = &gAnimalState.animals[dying_slot];
+            D_803D5524 = gAnimalState.animals[dying_slot].species;
+            D_803D5528 = corpse; D_803D552C = corpse; D_803D5530 = corpse;
+            spawn_dizzy_stars_big();
+            D_803D5520 = save20; D_803D5524 = save24; D_803D5528 = save28;
+            D_803D552C = save2C; D_803D5530 = save30;
+            remove_collision_list(corpse);
+            corpse->movementMode = MOVEMENT_MODE_DELETED;
             SSSVCoop_Debug(15, dying_slot);   // corpse cleanup event
             dying_slot = -1;
         }
@@ -382,6 +436,16 @@ void coop_frame_update(void) {
             io[5] = (s16)(own->yPos >> 16);
             io[6] = own->heading;
             io[7] = own->yRotation;
+            {
+                u16* src = (u16*)((u8*)own + POSE_BLOB_OFF);
+                s32 k;
+                for (k = 0; k < POSE_BLOB_WORDS; k++) {
+                    io[IO_OWN_POSE + k] = (s16)src[k];
+                }
+                io[IO_OWN_POSE + 34] = (s16)own->state;
+                io[IO_OWN_POSE + 35] = (s16)(own->movementState | ((u16)own->unk365 << 8));
+                io[IO_OWN_POSE + 36] = (s16)(own->unk36C | ((u16)(u8)own->unk36E << 8));
+            }
         }
     }
 
@@ -460,7 +524,9 @@ void coop_frame_update(void) {
     // finishing, which made the score award repeat endlessly. The engine
     // deletes the slot itself when the sequence ends; we respawn afterward.
     g = &gAnimalState.animalPool[ghost_slot];
-    if (g->health <= 0 || g->movementMode != MOVEMENT_MODE_INJURED) {
+    if (g->health <= 0 ||
+        (g->movementMode != MOVEMENT_MODE_INJURED &&
+         g->movementMode != MOVEMENT_MODE_NORMAL)) {
         SSSVCoop_Debug(14, g->movementMode);  // ghost death/handoff event
         dying_slot = ghost_slot;              // watch the corpse for cleanup
         dying_timer = 150;                    // ~5s: let the death play out
@@ -508,11 +574,27 @@ void coop_frame_update(void) {
             g->yVelocity = dy;
         }
     }
-    g->heading = io[14];
-    g->previousHeading = io[14];
+    // Apply the peer's pose bundle: the per-species render functions compute
+    // the visible pose procedurally from these fields, so with them synced
+    // the ghost walks, turns, and gestures natively.
+    {
+        u16* dst = (u16*)((u8*)g + POSE_BLOB_OFF);
+        s32 k;
+        for (k = 0; k < POSE_BLOB_WORDS; k++) {
+            dst[k] = (u16)io[IO_PEER_POSE + k];
+        }
+        if (g->unk2FA == 0) g->unk2FA = 0x2000;  // gait divisor: never zero
+        g->state = (u16)io[IO_PEER_POSE + 34];
+        g->movementState = (u8)(io[IO_PEER_POSE + 35] & 0xFF);
+        g->unk365 = (u8)((io[IO_PEER_POSE + 35] >> 8) & 0xFF);
+        g->unk36C = (u8)(io[IO_PEER_POSE + 36] & 0xFF);
+        g->unk36E = (s8)((io[IO_PEER_POSE + 36] >> 8) & 0xFF);
+    }
     g->yRotation = io[15];
-    g->aiFlags = 0;                           // inert every frame
-    g->movementMode = MOVEMENT_MODE_INJURED;  // safe vanilla bare-spawn state
+    g->aiFlags = 0;                          // belt-and-suspenders with the patch
+    g->movementMode = MOVEMENT_MODE_NORMAL;  // full render/gait pipeline; the
+                                             // behavior dispatch patch keeps
+                                             // its AI from ever running
 
     if ((frame_counter % 60) == 0) {          // 2s heartbeat of ghost state
         SSSVCoop_Debug(5, io[10]);            // peer species
