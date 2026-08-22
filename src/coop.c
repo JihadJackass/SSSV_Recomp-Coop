@@ -261,25 +261,29 @@ RECOMP_IMPORT(".", void SSSVCoop_Debug(s32 tag, s32 value));
 
 #define COOP_STATUS_CONNECTED 3
 
-// Pose sync: raw copy of the Animal struct range 0x2E8..0x32C (34 u16 words:
-// missile display state, the whole gait/walk-cycle cluster incl. the 0x2FA
-// divisor, heading, and the head/ear/tail pose fields the per-species render
-// functions read), plus 3 packed words: [34]=state, [35]=movementState |
-// attack<<8, [36]=unk36C | unk36E<<8. movementMode, health, aiFlags,
-// position, and velocity are deliberately NOT in the blob -- those belong to
-// the ghost lifecycle and motion systems.
-#define POSE_BLOB_OFF   0x2E8
-#define POSE_BLOB_WORDS 34
-#define POSE_WORDS      37
+// Pose sync: raw copy of three pointer-free ranges of the Animal struct --
+// R1 0x2E8..0x330 (missiles, gait/walk-cycle cluster, heading, head/ear
+// fields), R2 0x334..0x364 (attack timer, dizziness, laughter, bounce), and
+// R3 0x368..0x3C0 (misc pose bytes plus the FOUR LimbIKState blocks, one per
+// leg: local-space joint angles and IK blend state, i.e. the actual visible
+// skeleton). Deliberately excluded: the Animal* pointer at 0x330, the
+// lifecycle-owned movementMode/unk367 at 0x366, the local tail handle at
+// 0x3C8, and the unknown struct113 pair at 0x3C0. Packed words after the
+// ranges: [104]=state, [105]=movementState | attack<<8; [106..108] = peer
+// velocities >> 8 for dead reckoning.
+#define POSE_WORDS      109
 #define IO_OWN_POSE     16
-#define IO_PEER_POSE    56
+#define IO_PEER_POSE    128
+static const struct { u16 off; u16 words; } pose_ranges[3] = {
+    { 0x2E8, 36 }, { 0x334, 24 }, { 0x368, 44 },
+};
 #define IO_OWN_VALID   0
 #define IO_OWN_LEVEL   1
 #define IO_PEER_AGE    8
 #define IO_PEER_LEVEL  9
 #define PEER_STALE_FRAMES 60   // 2 seconds without peer state = hide ghost
 
-static s16  io[96];
+static s16  io[240];
 static s32  ghost_slot = -1;
 static s16  ghost_species = -1;
 static s16  pending_species = -1;   // species-change damping
@@ -437,14 +441,18 @@ void coop_frame_update(void) {
             io[6] = own->heading;
             io[7] = own->yRotation;
             {
-                u16* src = (u16*)((u8*)own + POSE_BLOB_OFF);
-                s32 k;
-                for (k = 0; k < POSE_BLOB_WORDS; k++) {
-                    io[IO_OWN_POSE + k] = (s16)src[k];
+                s32 w = 0, r, k;
+                for (r = 0; r < 3; r++) {
+                    u16* src = (u16*)((u8*)own + pose_ranges[r].off);
+                    for (k = 0; k < pose_ranges[r].words; k++) {
+                        io[IO_OWN_POSE + w++] = (s16)src[k];
+                    }
                 }
-                io[IO_OWN_POSE + 34] = (s16)own->state;
-                io[IO_OWN_POSE + 35] = (s16)(own->movementState | ((u16)own->unk365 << 8));
-                io[IO_OWN_POSE + 36] = (s16)(own->unk36C | ((u16)(u8)own->unk36E << 8));
+                io[IO_OWN_POSE + 104] = (s16)own->state;
+                io[IO_OWN_POSE + 105] = (s16)(own->movementState | ((u16)own->unk365 << 8));
+                io[IO_OWN_POSE + 106] = (s16)(own->xVelocity >> 8);
+                io[IO_OWN_POSE + 107] = (s16)(own->zVelocity >> 8);
+                io[IO_OWN_POSE + 108] = (s16)(own->yVelocity >> 8);
             }
         }
     }
@@ -569,26 +577,37 @@ void coop_frame_update(void) {
             func_802DADA0_6EC450(g);
             SSSVCoop_Debug(12, ghost_slot);  // teleport event
         } else {
-            g->xVelocity = dx;   // engine: position += velocity this frame
-            g->zVelocity = dz;
-            g->yVelocity = dy;
+            // Dead reckoning: move at the peer's actual (smooth) velocity,
+            // plus a gentle drift toward the true position. Setting velocity
+            // to the raw remaining delta made it oscillate between zero and
+            // full stride at packet cadence, and the renderer reads velocity
+            // for lean and foot placement -- that oscillation was the twitch.
+            g->xVelocity = (((s32)io[IO_PEER_POSE + 106]) << 8) + (dx >> 3);
+            g->zVelocity = (((s32)io[IO_PEER_POSE + 107]) << 8) + (dz >> 3);
+            g->yVelocity = (((s32)io[IO_PEER_POSE + 108]) << 8) + (dy >> 3);
         }
     }
-    // Apply the peer's pose bundle: the per-species render functions compute
-    // the visible pose procedurally from these fields, so with them synced
-    // the ghost walks, turns, and gestures natively.
-    {
-        u16* dst = (u16*)((u8*)g + POSE_BLOB_OFF);
-        s32 k;
-        for (k = 0; k < POSE_BLOB_WORDS; k++) {
-            dst[k] = (u16)io[IO_PEER_POSE + k];
+    // Apply the peer's pose bundle ONLY when a fresh packet arrived this
+    // frame (age 0). The peer's fields are internally consistent per frame;
+    // re-applying a stale snapshot every frame mixed an old pose into the
+    // locally advancing state, which was the twitch. Between packets the
+    // game's own systems carry the pose forward coherently. The full blob is
+    // synced again, including the gait cluster: the 0x2FA stride divisor is
+    // the peer's real walking cadence and exactly what the ghost's limb IK
+    // needs. (The old "never zero" fallback of 0x2000 meant an 8192-frame
+    // stride, i.e. legs frozen solid. Divisors are small: ~frames-per-step.)
+    if (io[IO_PEER_AGE] == 0) {
+        s32 w = 0, r, k;
+        for (r = 0; r < 3; r++) {
+            u16* dst = (u16*)((u8*)g + pose_ranges[r].off);
+            for (k = 0; k < pose_ranges[r].words; k++) {
+                dst[k] = (u16)io[IO_PEER_POSE + w++];
+            }
         }
-        if (g->unk2FA == 0) g->unk2FA = 0x2000;  // gait divisor: never zero
-        g->state = (u16)io[IO_PEER_POSE + 34];
-        g->movementState = (u8)(io[IO_PEER_POSE + 35] & 0xFF);
-        g->unk365 = (u8)((io[IO_PEER_POSE + 35] >> 8) & 0xFF);
-        g->unk36C = (u8)(io[IO_PEER_POSE + 36] & 0xFF);
-        g->unk36E = (s8)((io[IO_PEER_POSE + 36] >> 8) & 0xFF);
+        if (g->unk2FA == 0) g->unk2FA = 32;
+        g->state = (u16)io[IO_PEER_POSE + 104];
+        g->movementState = (u8)(io[IO_PEER_POSE + 105] & 0xFF);
+        g->unk365 = (u8)((io[IO_PEER_POSE + 105] >> 8) & 0xFF);
     }
     g->yRotation = io[15];
     g->aiFlags = 0;                          // belt-and-suspenders with the patch

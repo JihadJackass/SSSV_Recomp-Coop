@@ -70,14 +70,14 @@ typedef struct {
 // Protocol
 // --------------------------------------------------------------------------
 #define COOP_MAGIC   0x5353434Fu  /* 'SSCO' */
-#define COOP_VERSION 1  // proto v1: pose bundle added; incompatible with v0 builds
+#define COOP_VERSION 3  // proto v3: full skeleton sync (limb IK blocks)
 
 enum { MSG_HELLO = 1, MSG_WELCOME = 2, MSG_PING = 3, MSG_PONG = 4, MSG_STATE = 6 };
 
 #pragma pack(push, 1)
 typedef struct {
     int16_t level, species, x, z, y, heading, yrot;
-    uint16_t pose[37];
+    uint16_t pose[109];
 } StatePayload;
 #pragma pack(pop)
 
@@ -174,7 +174,7 @@ static void coop_log(const char* fmt, ...) {
 #if defined(_WIN32) || defined(__GNUC__)
 __attribute__((constructor))
 static void coop_on_load(void) {
-    coop_log("=== sssv_coop_native loaded (build: phase2-v1.1.0) ===");
+    coop_log("=== sssv_coop_native loaded (build: phase2-v1.1.4) ===");
 }
 #endif
 
@@ -440,7 +440,7 @@ EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
             st.yrot    = MEM_H(0xE,  io);
             {
                 int k;
-                for (k = 0; k < 37; k++) {
+                for (k = 0; k < 109; k++) {
                     st.pose[k] = (uint16_t)MEM_H(0x20 + 2*k, io);  // io[16+k]
                 }
             }
@@ -463,8 +463,8 @@ EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
             MEM_H(0x1E, io) = g_peer_state.yrot;
             {
                 int k;
-                for (k = 0; k < 37; k++) {
-                    MEM_H(0x70 + 2*k, io) = (int16_t)g_peer_state.pose[k];  // io[56+k]
+                for (k = 0; k < 109; k++) {
+                    MEM_H(0x100 + 2*k, io) = (int16_t)g_peer_state.pose[k];  // io[128+k]
                 }
             }
         }
