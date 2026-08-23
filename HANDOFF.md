@@ -94,14 +94,23 @@ roadmap ends in host-authoritative shared enemy simulation.
   (ik-fight mask + idx:written->engine diffs for the 40 IK words).
 
 ## Open issues / next steps (in order)
-1. DOG-SPECIFIC leg twitch (sheep is clean!). IK field-fight detector is
-   armed; awaiting a capture: debug ON (host), both dogs, 30s walking +
-   15s idle, read POSE lines. Escalation ladder: soften blend to >>2;
-   blend IK unk0/unk2 words too; stop syncing IK mode/timer; if mask
-   empty, hunt in dog.c for dog-only fields outside synced ranges.
+0. SOLVED (1.2.2/1.2.3): dog leg twitch/floating. Root cause was WRITE
+   ORDERING: dog legs are IK-stepped by behavior-side locomotion the ghost
+   never runs, so peer IK must be transplanted; but input-time writes lost
+   to the engine's later idle micro-animation. Fix: hold peer's 40 IK words,
+   apply them in a RECOMP_HOOK on func_80328520_739BD0 (runs per animal
+   right before its render dispatch, context D_803D5520 identifies the
+   ghost) = last writer before draw. Engine now only writes blend fields
+   (mask 380E0380E0 = cooperative). Sheep legs are render-procedural and
+   never needed this. 1.2.3 added: peer in EVO soul state freezes the
+   vacated ghost body in place (ik_hold released -> engine idle anim,
+   velocities zeroed) instead of despawning; species-change path replaces
+   it on next possession.
 2. Head-turn does not follow peer (idle look-around + blink work, directed
-   turn does not). Source not yet found; not in synced ranges or IK blocks
-   apparently. Suspect player-control path or 0x306-0x312 semantics.
+   turn does not). Not in synced ranges or IK blocks. Suspect player-
+   control path or 0x306-0x312 semantics. Consider same late-frame apply.
+2b. Soul itself invisible while peer is EVO (by design: EVO spawn = crash).
+   Polish idea: sparkle/effect marker at peer position during soul state.
 3. Jump anticipation pose imperfect (tuck vs squash) - reevaluate after 1.
 4. Phase 3: host-selected missions. init_level @ 0x802961D4 in syms;
    broadcast gGameState.level + hook to auto-load on client. Design TBD.

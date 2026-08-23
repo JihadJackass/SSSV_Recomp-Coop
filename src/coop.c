@@ -404,6 +404,10 @@ static void ghost_despawn(void) {
 // King Penguin (64), Racing Tortoise (65), and Cool Cod (66) are real
 // animals and stay allowed. The species must also exist among OUR level's
 // current roster, guaranteeing its assets and species data are loaded here.
+static s32 species_is_evo(s16 id) {
+    return id == 61 || id == 62 || id == 63 || id == 67;
+}
+
 static s32 species_spawnable_here(s16 id) {
     s32 i;
     if (id < 0 || id > 67) return 0;
@@ -523,13 +527,32 @@ void coop_frame_update(void) {
 
     // ---- Decide whether the ghost should exist ----------------------------
     {
-        s32 want = connected &&
-                   io[IO_OWN_VALID] &&
-                   io[IO_PEER_AGE] < PEER_STALE_FRAMES &&
-                   io[IO_PEER_LEVEL] == own_level &&
-                   species_spawnable_here(io[10]);
+        s32 linked = connected &&
+                     io[IO_OWN_VALID] &&
+                     io[IO_PEER_AGE] < PEER_STALE_FRAMES &&
+                     io[IO_PEER_LEVEL] == own_level;
 
-        if (!want) {
+        // Peer is the EVO soul/microchip (between animals): their vacated
+        // body should remain standing where they left it, not vanish. Keep
+        // the existing ghost but freeze it: zero motion once, release the
+        // limb hold so the engine's idle animation takes over, and skip all
+        // driving until they possess something (the species-change path then
+        // despawns this body and spawns the new one).
+        if (linked && species_is_evo(io[10])) {
+            if (ghost_valid()) {
+                Animal* fg = &gAnimalState.animalPool[ghost_slot];
+                if (ik_hold_valid) {
+                    ik_hold_valid = 0;
+                    fg->xVelocity = 0;
+                    fg->zVelocity = 0;
+                    fg->yVelocity = 0;
+                }
+                return;  // frozen: engine idle-animates the vacated body
+            }
+            return;  // no ghost to freeze; nothing to show for a soul
+        }
+
+        if (!(linked && species_spawnable_here(io[10]))) {
             if (ghost_slot >= 0) ghost_despawn();
             return;
         }
