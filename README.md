@@ -9,16 +9,19 @@ LAN, Radmin VPN, or any IP network.
 Made for playing with a friend; both players need their own legally obtained copy of the game.
 
 
-**Current state:** presence co-op is working. You see each other move through
-the level in real time, each playing your own copy of the mission and
-coordinating however you like. Animation sync (so the other player walks and
-jumps properly instead of gliding), host-selected missions, and shared world
-state are on the roadmap below.
+**Current state:** presence co-op with animation sync and host-selected
+missions. You see each other move (and walk, and jump) through the level in
+real time, each playing your own copy of the mission; when the host picks a
+mission on the ship, the other player loads it automatically. Shared world
+state is on the roadmap below.
 
 ## Features
 
 - See the other player in your level as their currently possessed animal,
-  position and facing synced at 30Hz
+  position, facing, and full skeleton pose synced at 30Hz
+- Host-selected missions: when the host enters a level, the joining player
+  follows automatically from the ship's mission select (with a chirp and a
+  queued follow if they are mid-level at the time)
 - Possession-aware: when they jump into a new animal, their ghost changes
   species; while they are the floating EVO soul between animals, the ghost
   vanishes (fittingly) and returns on the next possession
@@ -76,8 +79,10 @@ Open Mods, select the mod, then Configure:
 
 1. Both machines in-game (the link only runs during gameplay, not on the
    title screen). Both chirp when connected.
-2. Load the same level on both machines. Coordinate over voice for now;
-   host-selected missions are a planned feature.
+2. The host picks the mission. The joining player follows automatically
+   the moment they are on the ship (zone select or mission brief screen);
+   if they are mid-level, they hear a chirp and follow as soon as they
+   return to the ship. Loading the same level manually still works too.
 3. Once you are both inside your starting animals, the other player appears.
    Each of you plays your own copy of the mission; objectives and collectibles
    are per-player at this stage.
@@ -102,6 +107,13 @@ Linux). Reading it top down:
   sits in menus or loading screens.
 - `DBG SPAWN/DESPAWN/TELEPORT` lines narrate the ghost's lifecycle;
   the periodic `ghost_*` lines are its live state.
+- `MISSION:` lines narrate host-selected missions: what the host picked and
+  when the joiner follows.
+
+Tip: you can test co-op alone on one PC by running two portable copies of
+SSSV Recompiled (each with its own `mods/` folder next to the exe), one set
+to Host and one set to Join with IP 127.0.0.1. Their log lines interleave in
+the shared log file but every line is timestamped.
 
 ## Building from source
 
@@ -152,22 +164,18 @@ decompilation and the port's shipped symbol files.
 
 ## Known limitations
 
-- The ghost does not animate yet: it holds the bare-spawn pose and glides.
-  Animation sync is the next milestone.
 - Objectives, collectibles, enemies, and switches are per-player; you are
   playing parallel copies of the level together, not one shared simulation
   yet.
-- Both players should be in the same level; there is no in-game indicator of
-  which level the other player is in yet.
+- Mission follow is one-way (host leads); the joiner is only pulled in from
+  the ship, never yanked out of a level they are playing.
 - Ghost motion is tuned for LAN; expect a little more rubber-banding over
   Radmin until interpolation lands.
 
 ## Roadmap
 
-1. Animation and pose sync (walk, turn, jump)
-2. Motion smoothing for internet latencies
-3. Host-selected missions (host picks, both load it automatically)
-4. Shared world state: synced switches and collectibles, then
+1. Motion smoothing for internet latencies
+2. Shared world state: synced switches and collectibles, then
    host-authoritative enemies and combat
 
 ## Credits

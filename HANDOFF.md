@@ -9,10 +9,10 @@ zip to the assistant.
    Cellenseres/SSSV_Recomp with SSSVRecompSyms; apt install clang-18 lld-18
    gcc-mingw-w64-x86-64; download RecompModTool from
    github.com/N64Recomp/N64Recomp/releases/tag/mod-tool-release.
-3. Current version 1.3.0, wire protocol v3. Bump protocol on wire changes.
-4. IMMEDIATE TASK: Phase 3 (host-selected missions). See "Phase 3 notes".
-5. STANDING INSTRUCTION FROM USER: once Phase 3 is basically ready, remind
-   them ("call me out") to run the deferred validation batch (below).
+3. Current version 1.4.0, wire protocol v4. Bump protocol on wire changes.
+4. IMMEDIATE TASK: run the deferred validation batch (item 4b below), which
+   now includes Phase 3 end-to-end. Phase 3 is IMPLEMENTED, UNTESTED.
+5. After validation: Phase 4/5 research (host-authoritative world mirror).
 
 ## What this is
 Two-player online co-op mod for Space Station Silicon Valley: Recompiled
@@ -76,12 +76,29 @@ roadmap ends in host-authoritative shared enemy simulation.
 - gGameState @ 0x803F2D30, level s16 @ +0x8. gCurrentAnimalIndex 0x803D5534,
   gCurrentAnimalId 0x803E9824 (species id; equals EVO ids in soul states).
 - SFX: func_8032C508_73DBB8(id, 0x4000, 0, 1.0f); 144/145 = menu up/down.
+- MENU/SHIP FACTS (verified in decomp for Phase 3): the main loop
+  (overlay2_6A6500.c func_80294E50, NOT in port syms) branches on
+  gOverlayMenuState.unk0: nonzero -> func_8038FF68_7A1618 (menu machine, IN
+  syms, hookable), zero -> gameplay incl. get_controller_input. So unk0 is
+  the real "menu active" flag; gInitialisationState is only a 3-frame
+  transition counter (menu init sets 1, loop counts to 3, then unk0=1 and
+  back to 0) -- NOT an in-menu flag. gOverlayMenuState.unk18 (s16 @ +0x18)
+  is the shared menu state machine: 4 = ship zone select (the rings, in
+  ui_main_menu.c), 10 = mission brief; pause lives in 20/30 states; credits
+  40s. Confirm on the rings does gGameState.level = D_803F7DA8.currentLevel
+  + 1 (currentLevel is s8 @ D_803F7DA8+0x2D, 0-based). The one-shot load
+  recipe (proven by load_smashing_start, callable from menu state 4): set
+  currentLevel + gGameState.level, load_level_text_data(gEepromGlobal
+  .language [s8 @ +0xE], level-1, D_803F3330, D_803F34C0), then
+  func_8038FC58_7A1308() = init_level + reset_player_progress + fade +
+  volume ramps. Playable levels 1..32 (SMASHING_START..SECRET_LEVEL);
+  33/34 empty, 35 credits, 36 DMA_INTRO.
 - Score/health check per animal: func_80328520_739BD0. Update loop with
   render dispatch: overlay2_6D9AF0.c. Player movement + gaitPhase++:
   overlay2_6B5A40.c. Limb IK: overlay2_7312E0.c. gaitPhaseOffset derivation
   (uses 0x2FA divisor, states 3/4/6/182/183/185): overlay2_6CA7E0.c.
 
-## Current mod behavior (1.2.0)
+## Current mod behavior (1.4.0)
 - Phase 0/1 DONE: UDP host/join (config: mode/ip/port + debug_logging),
   self-healing handshake+heartbeat (10s timeout), state @30Hz.
 - Ghost lifecycle DONE: spawn on fresh peer state + same level +
@@ -99,6 +116,21 @@ roadmap ends in host-authoritative shared enemy simulation.
   12 joint-angle words excluded from direct apply and instead blended
   cur += (target-cur)>>1 per frame. movementMode forced NORMAL every frame;
   aiFlags 0; behavior skipped via the dispatch patch. unk2FA==0 -> 32.
+- Phase 3 DONE (1.4.0, untested): host-selected missions. Proto v4 adds
+  MSG_LEVEL {level,in_level,epoch} (epoch increments on every level ENTRY
+  incl. replays of the same level; native sends on change + 1/s, reports
+  peer trio in io[237..239], forcing in_level=0 if >5s stale; own trio out
+  in io[125..127]). The frame tick now runs from TWO hooks --
+  get_controller_input (gameplay) and func_8038FF68_7A1618 (menus) -- which
+  are mutually exclusive branches of the main loop, so exactly once per
+  frame everywhere; the link therefore no longer times out in menus.
+  IO_OWN_VALID is now gated on gOverlayMenuState.unk0 == 0 so no stale
+  state streams from menus (preserves old ghost-despawn-on-menu behavior).
+  Join side: each unseen host epoch with in_level and level 1..32 -> if
+  already in that level, latch; if on the ship at state 4 or 10, run the
+  one-shot load recipe (coop_load_level) and return; else chirp once (SFX
+  144) and keep it queued until the ship. Host never follows the client.
+  Log lines are "MISSION: ..." (SYS category, debug tags 16/17).
 - Logging: [HH:MM:SS.mmm] CAT | msg; categories SYS/NET/GHOST/POSE; NET on
   change + 30s alive; 2MB cap; session banners; tools/watch-log.bat =
   color live tail. Debug mode: 2s ghost status + 1s IK fight report
@@ -134,21 +166,19 @@ roadmap ends in host-authoritative shared enemy simulation.
    driving only; engine physics (water bobbing, gravity, shoves) still
    runs -- verify with a water body test.
 3. Jump anticipation pose imperfect (tuck vs squash) - reevaluate after 1.
-4. == CURRENT TASK == Phase 3: host-selected missions.
-   Known: init_level @ 0x802961D4 (in syms) reads gGameState.level
-   (0x803F2D30 +0x8) and mirrors it to D_80204280; the ship hub is where
-   levels get selected. Research entry points: callers of init_level, the
-   ship's level-select flow, and whatever state flag triggers ship->level
-   transition. Design sketch: new wire msg (bump proto to v4) "host entered
-   level N"; client, when on the ship/any level, sets its own level target
-   and triggers the same transition the ship UI uses. Keep it tolerant:
-   if the client is mid-level, queue until they return to ship, or prompt
-   via SFX. Also acceptable v1: client auto-loads only from the ship.
-   IMPORTANT: design so partial validation works with minimal two-machine
-   time (see testing-burden note).
+4. Phase 3 host-selected missions: IMPLEMENTED in 1.4.0 (see Current mod
+   behavior). Untested; part of the validation batch below. Design followed
+   the v1 sketch: client auto-loads from the ship only (states 4/10), queue
+   + one chirp when mid-level, epoch handles replays of the same level.
+   Not done (possible later polish): a config toggle to disable following;
+   an on-screen indicator of the host's level; two-way follow.
 
-4b. DEFERRED VALIDATION BATCH (user request: run once Phase 3 is basically
-   ready -- REMIND THEM PROACTIVELY at that point):
+4b. == CURRENT TASK == DEFERRED VALIDATION BATCH (run now that Phase 3 is
+   ready -- this is the reminder the user asked for). MUCH of this is
+   one-PC testable: run two PORTABLE copies of the port on the main PC
+   (separate mods/ folders), one Host one Join via 127.0.0.1; shared log
+   file interleaves but lines are timestamped. Only Radmin-specific feel
+   needs the laptop.
    - 1.2.3 soul-freeze: vacated body persists + idles when peer goes EVO;
      re-entry resumes; body-in-WATER still bobs (engine physics through
      freeze is the design; verify reality).
@@ -156,7 +186,12 @@ roadmap ends in host-authoritative shared enemy simulation.
      machines); peer floats as soul with no vacated body; either a visible
      EVO drifts (-> build dual-ghost: frozen body + soul simultaneously,
      needs 2nd slot tracking) or it crashes (-> dump names missing init).
-   - Phase 3 itself end-to-end.
+   - Phase 3 end-to-end: host picks level from ship -> client on ship
+     follows (from zone select AND from mission brief); client mid-level
+     gets one chirp then follows on returning to ship; host replays the
+     SAME level -> client follows again (epoch check); host picks credits/
+     intro -> client ignores; client in pause is NOT yanked; link now stays
+     CONNECTED through menus (no more timeout cycles in the log).
 5. Phase 4/5: host-authoritative world mirror (suppress client behaviors
    via the same dispatch patch, mirror all slots, combat events, enemies
    target both players via the "get player position" helpers). User WANTS

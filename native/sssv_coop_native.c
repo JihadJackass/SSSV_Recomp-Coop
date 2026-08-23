@@ -70,15 +70,23 @@ typedef struct {
 // Protocol
 // --------------------------------------------------------------------------
 #define COOP_MAGIC   0x5353434Fu  /* 'SSCO' */
-#define COOP_VERSION 3  // proto v3: full skeleton sync (limb IK blocks)
+#define COOP_VERSION 4  // proto v4: adds MSG_LEVEL (host-selected missions)
 
-enum { MSG_HELLO = 1, MSG_WELCOME = 2, MSG_PING = 3, MSG_PONG = 4, MSG_STATE = 6 };
+enum { MSG_HELLO = 1, MSG_WELCOME = 2, MSG_PING = 3, MSG_PONG = 4, MSG_STATE = 6, MSG_LEVEL = 7 };
 
 #pragma pack(push, 1)
 typedef struct {
     int16_t level, species, x, z, y, heading, yrot;
     uint16_t pose[109];
 } StatePayload;
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+typedef struct {            // mission trio: which level the sender is in
+    int16_t level;
+    int16_t in_level;       // 1 = actually playing it (not ship/menus)
+    int16_t epoch;          // increments on every level ENTRY (incl. replays)
+} LevelPayload;
 #pragma pack(pop)
 
 #pragma pack(push, 1)
@@ -112,6 +120,11 @@ static struct sockaddr_in g_peer;
 static double g_last_rx = 0.0;
 static StatePayload g_peer_state;
 static double g_peer_state_time = -1.0;   // <0 = never received
+static LevelPayload g_own_level  = { 0, 0, 0 };
+static LevelPayload g_peer_level = { 0, 0, 0 };
+static double g_peer_level_time = -1.0;   // <0 = never received
+static double g_last_level_tx = 0.0;
+#define LEVEL_STALE_S 5.0   // no MSG_LEVEL for this long -> treat as not in-level
 static double g_last_tx = 0.0;
 static int    g_wsa_init = 0;
 
@@ -252,6 +265,20 @@ static void send_msg(uint8_t type, const struct sockaddr_in* to) {
     g_last_tx = now_seconds();
 }
 
+static void send_level(const LevelPayload* lv) {
+    char buf[sizeof(PacketHeader) + sizeof(LevelPayload)];
+    PacketHeader* h = (PacketHeader*)buf;
+    h->magic = COOP_MAGIC;
+    h->version = COOP_VERSION;
+    h->type = MSG_LEVEL;
+    h->reserved = 0;
+    memcpy(buf + sizeof(PacketHeader), lv, sizeof(LevelPayload));
+    sendto(g_sock, buf, sizeof(buf), 0,
+           (const struct sockaddr*)&g_peer, sizeof(g_peer));
+    g_last_tx = now_seconds();
+    g_last_level_tx = g_last_tx;
+}
+
 static void send_state(const StatePayload* st) {
     char buf[sizeof(PacketHeader) + sizeof(StatePayload)];
     PacketHeader* h = (PacketHeader*)buf;
@@ -377,6 +404,19 @@ static void net_pump(void) {
                 g_last_rx = t;
             }
             break;
+        case MSG_LEVEL:
+            if (g_have_peer && (size_t)n >= sizeof(PacketHeader) + sizeof(LevelPayload)) {
+                LevelPayload prev = g_peer_level;
+                memcpy(&g_peer_level, buf + sizeof(PacketHeader), sizeof(LevelPayload));
+                g_peer_level_time = t;
+                g_last_rx = t;
+                if (prev.epoch != g_peer_level.epoch || prev.level != g_peer_level.level ||
+                    prev.in_level != g_peer_level.in_level) {
+                    coop_logc(LC_NET, "peer level: %d in_level=%d epoch=%d",
+                              g_peer_level.level, g_peer_level.in_level, g_peer_level.epoch);
+                }
+            }
+            break;
         default:
             break;
         }
@@ -396,6 +436,7 @@ static void net_pump(void) {
         coop_logc(LC_NET, "peer lost: no packets for %.0fs, reconnecting", PEER_TIMEOUT_S);
         g_have_peer = 0;
         g_peer_state_time = -1.0;
+        g_peer_level_time = -1.0;
         g_status = (g_mode == MODE_HOST) ? CST_LISTENING : CST_CONNECTING;
     }
 }
@@ -418,6 +459,8 @@ EXPORT void SSSVCoop_Debug(uint8_t* rdram, recomp_context* ctx) {
     case 13: coop_logc(LC_GHOST, "species %d", v); break;
     case 14: coop_logc(LC_GHOST, "killed by engine (mode %d), letting death play out", v); break;
     case 15: coop_logc(LC_GHOST, "corpse cleaned, slot %d freed", v); break;
+    case 16: coop_logc(LC_SYS,   "MISSION: following host into level %d", v); break;
+    case 17: coop_logc(LC_SYS,   "MISSION: host selected level %d; will follow from the ship", v); break;
     default: coop_logc(LC_GHOST, "event %d = %d", tag, v); break;
     }
 }
@@ -529,6 +572,23 @@ EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
     net_pump();
 
     if (io != 0) {
+        // Outgoing: mission trio (io[125..127]); send on change or 1/s.
+        {
+            LevelPayload lv;
+            lv.level    = MEM_H(0xFA, io);
+            lv.in_level = MEM_H(0xFC, io);
+            lv.epoch    = MEM_H(0xFE, io);
+            if (g_have_peer) {
+                double t2 = now_seconds();
+                if (lv.level != g_own_level.level ||
+                    lv.in_level != g_own_level.in_level ||
+                    lv.epoch != g_own_level.epoch ||
+                    t2 - g_last_level_tx >= HEARTBEAT_INTERVAL_S) {
+                    send_level(&lv);
+                }
+            }
+            g_own_level = lv;
+        }
         // Outgoing: send our state every frame while connected.
         if (g_have_peer && MEM_H(0x0, io) != 0) {
             StatePayload st;
@@ -568,6 +628,16 @@ EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
                     MEM_H(0x100 + 2*k, io) = (int16_t)g_peer_state.pose[k];  // io[128+k]
                 }
             }
+        }
+        // Incoming: peer mission trio (io[237..239]); a stale trio (no
+        // MSG_LEVEL for LEVEL_STALE_S) reports in_level = 0 so the mod
+        // never follows a dead link into a level.
+        {
+            int fresh = g_have_peer && g_peer_level_time >= 0.0 &&
+                        (now_seconds() - g_peer_level_time) <= LEVEL_STALE_S;
+            MEM_H(0x1DA, io) = g_peer_level.level;
+            MEM_H(0x1DC, io) = fresh ? g_peer_level.in_level : 0;
+            MEM_H(0x1DE, io) = g_peer_level.epoch;
         }
     }
 

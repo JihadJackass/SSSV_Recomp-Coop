@@ -252,15 +252,16 @@ extern void func_8032C508_73DBB8(s16 sfxId, s32 volume, s32 pan, f32 pitch);
 #define SFX_MENU_NAVIGATE_UP    144
 #define SFX_MENU_NAVIGATE_DOWN  145
 
-#define MOVEMENT_MODE_NORMAL  1
-#define MOVEMENT_MODE_DELETED 6
-
 // ---------------------------------------------------------------------------
-// Native link. io is 20 s16 slots shared both ways each frame:
-//   [0]  out: own state valid (1/0)
-//   [1..7]  out: level, species, x, z, y, heading, yRotation
-//   [8]  in:  peer state age in frames (999 = none/stale)
-//   [9..15] in:  peer level, species, x, z, y, heading, yRotation
+// Native link. io is 240 s16 slots shared both ways each frame:
+//   [0]       out: own state valid (1/0) -- gates STATE packets
+//   [1..7]    out: level, species, x, z, y, heading, yRotation
+//   [8]       in:  peer state age in frames (999 = none/stale)
+//   [9..15]   in:  peer level, species, x, z, y, heading, yRotation
+//   [16..124] out: own pose bundle (109 words, see pose_ranges)
+//   [125..127]out: own mission trio: level, in-level flag, level epoch
+//   [128..236]in:  peer pose bundle
+//   [237..239]in:  peer mission trio (in-level flag zeroed if stale)
 // Return: connection status (3 = connected).
 // ---------------------------------------------------------------------------
 RECOMP_IMPORT(".", s32 SSSVCoop_Update(s32 mode, char* ip, s32 port, s16* io));
@@ -287,12 +288,12 @@ static const struct { u16 off; u16 words; } pose_ranges[3] = {
     { 0x2E8, 36 }, { 0x334, 24 }, { 0x368, 44 },
 };
 
-// The 12 joint-angle words (3 per LimbIKState, 4 legs) are not applied
-// directly: hard-snapping them on each packet arrival, against the engine's
-// own IK advancing them between packets, showed up as a per-packet shimmer
-// in the feet. Instead they blend quickly toward the latest packet's values.
-// Pose-word indices: R1(36) + R2(24) = 60 words precede R3; IK blocks start
-// at R3 words 4/14/24/34, joint angles are words 2..4 within each block.
+// The four LimbIKState blocks (R3 words 4..43, 40 words) are not applied at
+// input time: those writes lost to the engine's later idle micro-animation
+// each frame (the 1.2.x shimmer). Instead the latest packet's 40 words are
+// held in ik_hold and applied by coop_pre_render_ik -- a hook on the
+// per-animal pre-render function -- so the peer's skeleton gets the last
+// word before drawing. (An earlier per-frame blend approach is superseded.)
 // Field-fight detector (debug mode): remember exactly what we last wrote to
 // the ghost's four IK blocks; any word that differs at the next frame's
 // entry was rewritten by the ENGINE locally. Those are the fields the sync
@@ -311,6 +312,87 @@ static s32 evo_ghost_experiment = 0;
 #define IO_PEER_AGE    8
 #define IO_PEER_LEVEL  9
 #define PEER_STALE_FRAMES 60   // 2 seconds without peer state = hide ghost
+
+// ---------------------------------------------------------------------------
+// Phase 3: host-selected missions.
+//
+// How the ship does it (from mkst/sssv, ui_main_menu.c + overlay2_7A0DA0.c):
+// the zone-select rings (menu state 4) set gGameState.level =
+// D_803F7DA8.currentLevel + 1 on confirm; later states fade out and call
+// func_8038FC58_7A1308() = init_level + reset_player_progress + fade-in +
+// volume ramps. load_smashing_start() proves the one-shot form of that
+// recipe (set level + currentLevel, load the level text bank, call
+// func_8038FC58) is callable directly from menu state 4. We reuse it
+// verbatim with the host's level.
+//
+// "On the ship" detection: gOverlayMenuState.unk0 is the menu-active flag
+// (the main loop branches on it), and unk18 is the shared menu state
+// machine -- 4 = zone select, 10 = mission brief (the two interactive ship
+// screens). The pause menu also runs with unk0 != 0 but sits in states
+// 20/30, so gating on 4/10 never yanks a player out of pause.
+// (gInitialisationState is only a 3-frame transition counter, not an
+// in-menu flag -- do not use it for this.)
+// ---------------------------------------------------------------------------
+extern s16 gLoadedMessageCount;
+extern u16 D_803F3330[];              // level text: message offsets
+extern s16 D_803F34C0[];              // level text: data
+extern s16 load_level_text_data(s16 language, s16 level, u16* msgOffsets, s16* dst);
+extern void func_8038FC58_7A1308(void);  // init_level + reset progress + fades
+
+typedef struct {                      // struct030: level-select state
+    u8 pad0[0x2C];
+    s8 biome;                         // 0x2C
+    s8 currentLevel;                  // 0x2D  0-based: gGameState.level - 1
+    s8 bank;                          // 0x2E
+    u8 pad2F[3];
+    s8 previousLevel;                 // 0x32
+} LevelSelect;
+extern LevelSelect D_803F7DA8;
+_Static_assert(__builtin_offsetof(LevelSelect, currentLevel) == 0x2D, "currentLevel off");
+
+typedef struct {                      // struct027: overlay menu state
+    s16 unk0;                         // 0x00 menu active (main loop branch)
+    u8  pad2[0x18 - 0x2];
+    s16 unk18;                        // 0x18 menu state machine
+} OverlayMenu;
+extern OverlayMenu gOverlayMenuState;
+_Static_assert(__builtin_offsetof(OverlayMenu, unk18) == 0x18, "unk18 off");
+
+typedef struct {                      // Eeprom (settings)
+    u8 pad0[0xE];
+    s8 language;                      // 0x0E
+} EepromMin;
+extern EepromMin gEepromGlobal;
+
+#define MENU_STATE_ZONE_SELECT    4
+#define MENU_STATE_MISSION_BRIEF  10
+#define LEVEL_FIRST_PLAYABLE      1   // SMASHING_START
+#define LEVEL_LAST_PLAYABLE       32  // SECRET_LEVEL (33/34 empty, 35 credits, 36 intro)
+
+// io slots for the mission trio (free tails of the two pose blocks)
+#define IO_OWN_MLEVEL   125
+#define IO_OWN_INLEVEL  126
+#define IO_OWN_EPOCH    127
+#define IO_PEER_MLEVEL  237
+#define IO_PEER_INLEVEL 238
+#define IO_PEER_EPOCH   239
+
+static s16 own_epoch = 0;        // increments each time WE enter a playable level
+static s16 was_in_level = 0;
+static s16 followed_epoch = 0;   // host level-entry epochs already acted on
+static s16 prompted_epoch = 0;   // epochs we already chirped about mid-level
+
+// The vanilla one-shot load recipe (load_smashing_start's body,
+// parameterized): keep the ship UI's 0-based selection in step, set the
+// level, load its text bank, then init_level + reset progress + fades.
+static void coop_load_level(s16 target) {
+    D_803F7DA8.currentLevel = (s8)(target - 1);
+    gGameState.level = target;
+    gLoadedMessageCount = load_level_text_data((s16)gEepromGlobal.language,
+                                               (s16)(target - 1),
+                                               D_803F3330, D_803F34C0);
+    func_8038FC58_7A1308();
+}
 
 static s16  io[240];
 static s32  ghost_slot = -1;
@@ -431,8 +513,21 @@ static s32 ghost_valid(void) {
     return 1;
 }
 
+// The main loop is `if (menu active) func_8038FF68_7A1618() else { ...
+// get_controller_input() ... }` -- the two branches are mutually exclusive,
+// so hooking BOTH runs the tick exactly once per frame everywhere: in
+// levels (as before) and now also on the ship and in pause menus. That is
+// what lets the client follow the host from the ship, and as a side effect
+// the connection no longer times out while sitting in menus.
+static void coop_tick(void);
+
 RECOMP_HOOK("get_controller_input")
-void coop_frame_update(void) {
+void coop_frame_update(void) { coop_tick(); }
+
+RECOMP_HOOK("func_8038FF68_7A1618")
+void coop_menu_update(void) { coop_tick(); }
+
+static void coop_tick(void) {
     static s32 prev_connected = 0;
     s32 status, connected;
     s16 own_level;
@@ -480,10 +575,16 @@ void coop_frame_update(void) {
     }
 
     // ---- Gather own state -------------------------------------------------
+    // Own state is only "valid" (streamed as a STATE packet) while actually
+    // in-level: with the tick now also running in menus, streaming there
+    // would send stale animal state under the old level id and leave our
+    // ghost lingering in the peer's world. Menu = invalid = the peer's
+    // stale-age despawn handles it, exactly like the pre-menu-hook builds.
     own_level = gGameState.level;
     io[IO_OWN_VALID] = 0;
     i = gCurrentAnimalIndex;
-    if (i >= 0 && i < 50 && i < gNumAnimalsInLevel) {
+    if (gOverlayMenuState.unk0 == 0 &&
+        i >= 0 && i < 50 && i < gNumAnimalsInLevel) {
         own = gAnimalState.animals[i].animal;
         if (own != 0) {
             io[IO_OWN_VALID] = 1;
@@ -520,6 +621,45 @@ void coop_frame_update(void) {
         func_8032C508_73DBB8(SFX_MENU_NAVIGATE_DOWN, 0x4000, 0, 1.0f);
     }
     prev_connected = connected;
+
+    // ---- Phase 3: host-selected missions ----------------------------------
+    {
+        s32 in_level = (gOverlayMenuState.unk0 == 0) &&
+                       own_level >= LEVEL_FIRST_PLAYABLE &&
+                       own_level <= LEVEL_LAST_PLAYABLE;
+        if (in_level && !was_in_level) own_epoch++;   // each level ENTRY,
+        was_in_level = (s16)in_level;                 // including replays
+        io[IO_OWN_MLEVEL]  = own_level;
+        io[IO_OWN_INLEVEL] = (s16)in_level;
+        io[IO_OWN_EPOCH]   = own_epoch;
+
+        // Join side only: each host level entry (epoch) is handled once.
+        if (cached_mode == 2 && connected &&
+            io[IO_PEER_INLEVEL] && io[IO_PEER_EPOCH] != followed_epoch) {
+            s16 target = io[IO_PEER_MLEVEL];
+            if (target < LEVEL_FIRST_PLAYABLE || target > LEVEL_LAST_PLAYABLE) {
+                followed_epoch = io[IO_PEER_EPOCH];   // credits/intro: ignore
+            } else if (in_level && own_level == target) {
+                followed_epoch = io[IO_PEER_EPOCH];   // already together
+            } else if (gOverlayMenuState.unk0 != 0 &&
+                       (gOverlayMenuState.unk18 == MENU_STATE_ZONE_SELECT ||
+                        gOverlayMenuState.unk18 == MENU_STATE_MISSION_BRIEF)) {
+                // On the ship at an interactive screen: follow the host.
+                followed_epoch = io[IO_PEER_EPOCH];
+                SSSVCoop_Debug(16, target);
+                coop_load_level(target);
+                return;  // world resets under us; next tick re-syncs via
+                         // the own-level-change path
+            } else if (prompted_epoch != io[IO_PEER_EPOCH]) {
+                // Mid-level (or paused/title): don't yank the player.
+                // Chirp once so they know, keep the epoch queued; the load
+                // fires automatically when they reach the ship.
+                prompted_epoch = io[IO_PEER_EPOCH];
+                SSSVCoop_Debug(17, target);
+                func_8032C508_73DBB8(SFX_MENU_NAVIGATE_UP, 0x4000, 0, 1.0f);
+            }
+        }
+    }
 
     // ---- Our own level change wipes every slot: just forget ---------------
     if (own_level != last_level) {
