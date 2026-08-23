@@ -2,7 +2,7 @@
 
 [manifest]
 id = "sssv_coop"
-version = "1.1.4"
+version = "1.2.2"
 display_name = "SSSV Co-op"
 description = """
 Two-player online co-op for Space Station Silicon Valley. Each player runs \
@@ -24,7 +24,7 @@ dependencies = [ ]
 optional_dependencies = [ ]
 
 native_libraries = [
-    { name = "sssv_coop_native", funcs = ["SSSVCoop_Update", "SSSVCoop_Debug"] }
+    { name = "sssv_coop_native", funcs = ["SSSVCoop_Update", "SSSVCoop_Debug", "SSSVCoop_GhostStatus", "SSSVCoop_IkReport"] }
 ]
 
 [inputs]
@@ -39,6 +39,14 @@ additional_files = [ ]
 # ---------------------------------------------------------------------------
 # Configure menu
 # ---------------------------------------------------------------------------
+
+[[manifest.config_options]]
+id = "debug_logging"
+name = "Debug logging"
+description = "Writes detailed animation-sync diagnostics to coop_log.txt. Leave Off for normal play."
+type = "Enum"
+options = [ "Off", "On" ]
+default = "Off"
 
 [[manifest.config_options]]
 id = "mode"

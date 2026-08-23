@@ -146,6 +146,19 @@ static void log_open(void) {
     if (base) snprintf(path, sizeof(path), "%s/.config/SSSVRecompiled/coop_log.txt", base);
     else      snprintf(path, sizeof(path), "coop_log.txt");
 #endif
+    {
+        FILE* probe = fopen(path, "rb");
+        if (probe) {
+            long sz;
+            fseek(probe, 0, SEEK_END);
+            sz = ftell(probe);
+            fclose(probe);
+            if (sz > 2*1024*1024) {
+                FILE* trunc = fopen(path, "w");  // cap at 2MB: start fresh
+                if (trunc) fclose(trunc);
+            }
+        }
+    }
     g_log = fopen(path, "a");
     if (g_log) {
         fprintf(g_log, "--- log path: %s ---\n", path);
@@ -157,15 +170,50 @@ static void log_open(void) {
 }
 
 
-static void coop_log(const char* fmt, ...) {
+enum { LC_SYS = 0, LC_NET = 1, LC_GHOST = 2, LC_POSE = 3 };
+static const char* lc_name[4] = { "SYS  ", "NET  ", "GHOST", "POSE " };
+
+static void log_timestamp(char* buf, size_t n) {
+#ifdef _WIN32
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    snprintf(buf, n, "%02d:%02d:%02d.%03d",
+             st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+#else
+    struct timespec ts;
+    struct tm tmv;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    localtime_r(&ts.tv_sec, &tmv);
+    snprintf(buf, n, "%02d:%02d:%02d.%03ld",
+             tmv.tm_hour, tmv.tm_min, tmv.tm_sec, ts.tv_nsec / 1000000);
+#endif
+}
+
+static void coop_logc(int cat, const char* fmt, ...) {
     va_list ap;
+    char ts[16];
     log_open();
     if (!g_log) return;
-    fprintf(g_log, "[%10.3f] ", now_seconds());
+    log_timestamp(ts, sizeof(ts));
+    fprintf(g_log, "[%s] %s | ", ts, lc_name[cat & 3]);
     va_start(ap, fmt);
     vfprintf(g_log, fmt, ap);
     va_end(ap);
     fprintf(g_log, "\n");
+    fflush(g_log);
+}
+
+static void coop_log(const char* fmt, ...) {   // legacy: SYS category
+    va_list ap;
+    char ts[16];
+    char line[512];
+    log_open();
+    if (!g_log) return;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    log_timestamp(ts, sizeof(ts));
+    fprintf(g_log, "[%s] %s | %s\n", ts, lc_name[LC_SYS], line);
     fflush(g_log);
 }
 
@@ -174,7 +222,12 @@ static void coop_log(const char* fmt, ...) {
 #if defined(_WIN32) || defined(__GNUC__)
 __attribute__((constructor))
 static void coop_on_load(void) {
-    coop_log("=== sssv_coop_native loaded (build: phase2-v1.1.4) ===");
+    log_open();
+    if (g_log) {
+        fprintf(g_log, "\n============================================================\n");
+        fflush(g_log);
+    }
+    coop_logc(LC_SYS, "SSSV Co-op native loaded  (build 1.2.2)  -- session start");
 }
 #endif
 
@@ -227,7 +280,7 @@ static int net_setup(int mode, const char* ip, int port) {
     net_teardown();
 
     g_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (g_sock == SOCK_INVALID) { coop_log("ERROR: socket() failed"); return 0; }
+    if (g_sock == SOCK_INVALID) { coop_logc(LC_NET, "ERROR: socket() failed"); return 0; }
     sock_set_nonblocking(g_sock);
 
     if (mode == MODE_HOST) {
@@ -236,24 +289,24 @@ static int net_setup(int mode, const char* ip, int port) {
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
         addr.sin_port = htons((uint16_t)port);
         if (bind(g_sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-            coop_log("ERROR: bind() on port %d failed (port in use?)", port);
+            coop_logc(LC_NET, "ERROR: bind() on port %d failed (port in use?)", port);
             net_teardown();
             return 0;
         }
         g_status = CST_LISTENING;
-        coop_log("HOST: listening on UDP %d", port);
+        coop_logc(LC_NET, "listening (host) on UDP %d", port);
     } else { // MODE_JOIN
         memset(&g_peer, 0, sizeof(g_peer));
         g_peer.sin_family = AF_INET;
         g_peer.sin_port = htons((uint16_t)port);
         if (inet_pton(AF_INET, ip, &g_peer.sin_addr) != 1) {
-            coop_log("ERROR: bad IP string '%s'", ip);
+            coop_logc(LC_NET, "ERROR: bad IP string [%s]", ip);
             net_teardown();
             return 0;
         }
         g_have_peer = 0;  // becomes 1 on WELCOME
         g_status = CST_CONNECTING;
-        coop_log("JOIN: targeting %s:%d", ip, port);
+        coop_logc(LC_NET, "joining %s:%d", ip, port);
     }
 
     g_mode = mode;
@@ -291,7 +344,7 @@ static void net_pump(void) {
         case MSG_HELLO:
             if (g_mode == MODE_HOST) {
                 g_peer = from;          // adopt/refresh the peer address
-                if (!g_have_peer) coop_log("HOST: HELLO from %s -> CONNECTED", inet_ntoa(from.sin_addr));
+                if (!g_have_peer) coop_logc(LC_NET, "peer connected: HELLO from %s", inet_ntoa(from.sin_addr));
                 g_have_peer = 1;
                 g_last_rx = t;
                 send_msg(MSG_WELCOME, &g_peer);
@@ -300,7 +353,7 @@ static void net_pump(void) {
             break;
         case MSG_WELCOME:
             if (g_mode == MODE_JOIN) {
-                if (!g_have_peer) coop_log("JOIN: WELCOME received -> CONNECTED");
+                if (!g_have_peer) coop_logc(LC_NET, "connected: WELCOME received from host");
                 g_have_peer = 1;
                 g_last_rx = t;
                 g_status = CST_CONNECTED;
@@ -340,7 +393,7 @@ static void net_pump(void) {
 
     // Peer timeout -> fall back and keep trying.
     if (g_have_peer && (t - g_last_rx > PEER_TIMEOUT_S)) {
-        coop_log("TIMEOUT: no packets from peer for %.0fs, dropping", PEER_TIMEOUT_S);
+        coop_logc(LC_NET, "peer lost: no packets for %.0fs, reconnecting", PEER_TIMEOUT_S);
         g_have_peer = 0;
         g_peer_state_time = -1.0;
         g_status = (g_mode == MODE_HOST) ? CST_LISTENING : CST_CONNECTING;
@@ -354,22 +407,61 @@ static void net_pump(void) {
 //   a2 (r6) = port
 // Returns status in v0 (r2).
 // --------------------------------------------------------------------------
-static const char* dbg_tag_name(int t) {
-    switch (t) {
-    case 1: return "ghost_slot"; case 2: return "ghost_mode";
-    case 5: return "peer_species"; case 6: return "peer_level";
-    case 3: return "ghost_x"; case 4: return "ghost_y";
-    case 10: return "SPAWN slot"; case 11: return "DESPAWN slot";
-    case 12: return "TELEPORT slot"; case 13: return "species";
-    case 14: return "GHOST KILLED, engine mode";
-    case 15: return "CORPSE CLEANED, slot";
-    default: return "?";
+EXPORT void SSSVCoop_Debug(uint8_t* rdram, recomp_context* ctx) {
+    int tag = (int)(int32_t)ctx->r4;
+    int v = (int)(int32_t)ctx->r5;
+    (void)rdram;
+    switch (tag) {
+    case 10: coop_logc(LC_GHOST, "spawned in slot %d", v); break;
+    case 11: coop_logc(LC_GHOST, "despawned slot %d", v); break;
+    case 12: coop_logc(LC_GHOST, "teleport re-place, slot %d", v); break;
+    case 13: coop_logc(LC_GHOST, "species %d", v); break;
+    case 14: coop_logc(LC_GHOST, "killed by engine (mode %d), letting death play out", v); break;
+    case 15: coop_logc(LC_GHOST, "corpse cleaned, slot %d freed", v); break;
+    default: coop_logc(LC_GHOST, "event %d = %d", tag, v); break;
     }
 }
 
-EXPORT void SSSVCoop_Debug(uint8_t* rdram, recomp_context* ctx) {
+// One-line ghost status. Args packed into MIPS register args:
+//   a0 = slot | mode<<16, a1 = x, a2 = y, a3 = species | level<<16
+EXPORT void SSSVCoop_GhostStatus(uint8_t* rdram, recomp_context* ctx) {
+    int sm = (int)(int32_t)ctx->r4;
+    int x = (int)(int32_t)ctx->r5;
+    int y = (int)(int32_t)ctx->r6;
+    int sl = (int)(int32_t)ctx->r7;
     (void)rdram;
-    coop_log("DBG %s = %d", dbg_tag_name((int)(int32_t)ctx->r4), (int)(int32_t)ctx->r5);
+    coop_logc(LC_GHOST, "status: slot=%d mode=%d pos=(%d,%d) species=%d peer_level=%d",
+              (int16_t)(sm & 0xFFFF), (int16_t)((sm >> 16) & 0xFFFF), x, y,
+              (int16_t)(sl & 0xFFFF), (int16_t)((sl >> 16) & 0xFFFF));
+}
+
+// IK field-fight report: logs ONLY the words where the engine's current
+// values differ from what the mod last wrote, as idx:written->engine pairs,
+// plus the accumulated changed-word mask for the last second.
+//   a0 = engine's 40 current words, a1 = mod's 40 written words,
+//   a2 = accumulated mask lo, a3 = accumulated mask hi
+EXPORT void SSSVCoop_IkReport(uint8_t* rdram, recomp_context* ctx) {
+    gpr cur = ctx->r4;
+    gpr wr  = ctx->r5;
+    uint32_t mlo = (uint32_t)ctx->r6;
+    uint32_t mhi = (uint32_t)ctx->r7;
+    char line[512];
+    int pos = 0, k, diffs = 0;
+    pos += snprintf(line + pos, sizeof(line) - pos,
+                    "ik-fight mask=%02X%08X diffs:", mhi & 0xFF, mlo);
+    for (k = 0; k < 40 && pos < (int)sizeof(line) - 24; k++) {
+        uint16_t c = (uint16_t)MEM_H(2*k, cur);
+        uint16_t w = (uint16_t)MEM_H(2*k, wr);
+        if (c != w) {
+            pos += snprintf(line + pos, sizeof(line) - pos,
+                            " %d:%04X->%04X", k, w, c);
+            diffs++;
+        }
+    }
+    if (diffs == 0) {
+        snprintf(line + pos, sizeof(line) - pos, " none");
+    }
+    coop_logc(LC_POSE, "%s", line);
 }
 
 EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
@@ -398,15 +490,24 @@ EXPORT void SSSVCoop_Update(uint8_t* rdram, recomp_context* ctx) {
 
     if (first_call) {
         first_call = 0;
-        coop_log("=== SSSVCoop_Update first call: mode=%d ip='%s' port=%d (hook + config OK) ===",
-                 mode, ip, port);
+        coop_logc(LC_SYS, "hook + config OK  (mode=%d ip=[%s] port=%d)", mode, ip, port);
     }
     {
+        static int last_logged_status = -1;
+        static const char* stname[5] = {"off","listening","connecting","CONNECTED","error"};
         double t = now_seconds();
-        if (t - last_summary >= 5.0) {
+        int sidx = (g_status >= 0 && g_status <= 4) ? g_status : 4;
+        if (g_status != last_logged_status) {
+            last_logged_status = g_status;
             last_summary = t;
-            coop_log("status=%d mode=%d ip='%s' port=%d peer=%d",
-                     g_status, mode, ip, port, g_have_peer);
+            if (mode == 2) {
+                coop_logc(LC_NET, "status: %s  (join, target=%s port=%d)", stname[sidx], ip, port);
+            } else {
+                coop_logc(LC_NET, "status: %s  (host, port=%d)", stname[sidx], port);
+            }
+        } else if (t - last_summary >= 30.0) {
+            last_summary = t;
+            coop_logc(LC_NET, "alive: %s, peer=%s", stname[sidx], g_have_peer ? "yes" : "no");
         }
     }
 

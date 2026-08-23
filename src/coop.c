@@ -80,7 +80,12 @@ typedef struct Animal {
     /* 0x36C */ u8  unk36C;
     /* 0x36D */ u8  pad36D;
     /* 0x36E */ s8  unk36E;
-    /* 0x36F */ u8  pad36F[0x3CA - 0x36F];
+    /* 0x36F */ u8  pad36F;
+    /* 0x370 */ struct { s16 unk0, unk2, jointA, jointB, jointC, blendA, blendB, blendC; u16 mode; s16 timer; } ik0;
+    /* 0x384 */ struct { s16 unk0, unk2, jointA, jointB, jointC, blendA, blendB, blendC; u16 mode; s16 timer; } ik1;
+    /* 0x398 */ struct { s16 unk0, unk2, jointA, jointB, jointC, blendA, blendB, blendC; u16 mode; s16 timer; } ik2;
+    /* 0x3AC */ struct { s16 unk0, unk2, jointA, jointB, jointC, blendA, blendB, blendC; u16 mode; s16 timer; } ik3;
+    /* 0x3C0 */ u8  pad3C0[0x3CA - 0x3C0];
     /* 0x3CA */ s16 tailIndex;      // unk3C8.unk2 = load_dynamic_tail(id)
     /* 0x3CC */ u8  pad3CC[0x3D4 - 0x3CC];
 } Animal;
@@ -101,6 +106,8 @@ _Static_assert(__builtin_offsetof(Animal, unk365) == 0x365, "unk365 off");
 _Static_assert(__builtin_offsetof(Animal, movementMode) == 0x366, "movementMode off");
 _Static_assert(__builtin_offsetof(Animal, unk36C) == 0x36C, "unk36C off");
 _Static_assert(__builtin_offsetof(Animal, unk36E) == 0x36E, "unk36E off");
+_Static_assert(__builtin_offsetof(Animal, ik0) == 0x370, "ik0 off");
+_Static_assert(__builtin_offsetof(Animal, ik3) == 0x3AC, "ik3 off");
 _Static_assert(__builtin_offsetof(Animal, tailIndex) == 0x3CA, "tailIndex off");
 
 typedef struct {
@@ -258,6 +265,8 @@ extern void func_8032C508_73DBB8(s16 sfxId, s32 volume, s32 pan, f32 pitch);
 // ---------------------------------------------------------------------------
 RECOMP_IMPORT(".", s32 SSSVCoop_Update(s32 mode, char* ip, s32 port, s16* io));
 RECOMP_IMPORT(".", void SSSVCoop_Debug(s32 tag, s32 value));
+RECOMP_IMPORT(".", void SSSVCoop_GhostStatus(s32 slot_mode, s32 x, s32 y, s32 species_level));
+RECOMP_IMPORT(".", void SSSVCoop_IkReport(s16* cur, s16* written, s32 mask_lo, s32 mask_hi));
 
 #define COOP_STATUS_CONNECTED 3
 
@@ -277,6 +286,25 @@ RECOMP_IMPORT(".", void SSSVCoop_Debug(s32 tag, s32 value));
 static const struct { u16 off; u16 words; } pose_ranges[3] = {
     { 0x2E8, 36 }, { 0x334, 24 }, { 0x368, 44 },
 };
+
+// The 12 joint-angle words (3 per LimbIKState, 4 legs) are not applied
+// directly: hard-snapping them on each packet arrival, against the engine's
+// own IK advancing them between packets, showed up as a per-packet shimmer
+// in the feet. Instead they blend quickly toward the latest packet's values.
+// Pose-word indices: R1(36) + R2(24) = 60 words precede R3; IK blocks start
+// at R3 words 4/14/24/34, joint angles are words 2..4 within each block.
+// Field-fight detector (debug mode): remember exactly what we last wrote to
+// the ghost's four IK blocks; any word that differs at the next frame's
+// entry was rewritten by the ENGINE locally. Those are the fields the sync
+// and the engine are fighting over -- i.e. the twitch, named precisely.
+static u16 ik_hold[40];      // peer's four LimbIKState blocks, latest packet
+static u8  ik_hold_valid = 0;
+static u16 ik_written[40];
+static u8  ik_written_valid = 0;
+static u32 ik_fight_mask_lo = 0;   // accumulated changed-word mask (40 bits)
+static u32 ik_fight_mask_hi = 0;
+static s32 debug_mode = 0;
+
 #define IO_OWN_VALID   0
 #define IO_OWN_LEVEL   1
 #define IO_PEER_AGE    8
@@ -301,6 +329,7 @@ static void refresh_config(void) {
     char* ip;
     s32 i;
     cached_mode = (s32)recomp_get_config_u32("mode");
+    debug_mode  = (s32)recomp_get_config_u32("debug_logging");
     cached_port = (s32)recomp_get_config_double("port");
     ip = recomp_get_config_string("host_ip");
     if (ip != 0) {
@@ -327,11 +356,29 @@ RECOMP_PATCH void func_80389764_79AE14(u8 arg0) {
     behaviour_lut[*(u16*)((u8*)D_803D5524 + 0x9C)]();
 }
 
+// Runs per animal, right before that animal's render dispatch in the main
+// update loop -- i.e. AFTER the engine's own limb/idle animation writes.
+// For the ghost, this is where the peer's skeleton gets the last word.
+extern void func_80328520_739BD0(void);
+RECOMP_HOOK("func_80328520_739BD0")
+void coop_pre_render_ik(void) {
+    if (ghost_slot >= 0 && ik_hold_valid &&
+        D_803D5520 == &gAnimalState.animals[ghost_slot]) {
+        u16* dst = (u16*)((u8*)&gAnimalState.animalPool[ghost_slot] + 0x370);
+        s32 k;
+        for (k = 0; k < 40; k++) {
+            dst[k] = ik_hold[k];
+        }
+    }
+}
+
 // Forget the ghost without touching game memory (used when the world was
 // reset under us, e.g. our own level change).
 static void ghost_forget(void) {
     ghost_slot = -1;
     ghost_species = -1;
+    ik_written_valid = 0;
+    ik_hold_valid = 0;
 }
 
 // Actively remove the ghost using the game's own deletion protocol:
@@ -525,6 +572,24 @@ void coop_frame_update(void) {
         if (!ghost_valid()) { ghost_forget(); return; }
     }
 
+    // ---- Field-fight detector (debug mode only) ---------------------------
+    if (debug_mode && ghost_valid() && ik_written_valid) {
+        u16* cur = (u16*)((u8*)&gAnimalState.animalPool[ghost_slot] + 0x370);
+        s32 k;
+        for (k = 0; k < 40; k++) {
+            if (cur[k] != ik_written[k]) {
+                if (k < 32) ik_fight_mask_lo |= (1u << k);
+                else        ik_fight_mask_hi |= (1u << (k - 32));
+            }
+        }
+        if ((frame_counter % 30) == 0) {   // once a second
+            SSSVCoop_IkReport((s16*)cur, (s16*)ik_written,
+                              (s32)ik_fight_mask_lo, (s32)ik_fight_mask_hi);
+            ik_fight_mask_lo = 0;
+            ik_fight_mask_hi = 0;
+        }
+    }
+
     // ---- Death handoff ----------------------------------------------------
     // If the engine changed the ghost's state under us (someone killed it),
     // stop driving and let the death sequence complete naturally. Forcing
@@ -600,14 +665,33 @@ void coop_frame_update(void) {
         s32 w = 0, r, k;
         for (r = 0; r < 3; r++) {
             u16* dst = (u16*)((u8*)g + pose_ranges[r].off);
-            for (k = 0; k < pose_ranges[r].words; k++) {
-                dst[k] = (u16)io[IO_PEER_POSE + w++];
+            for (k = 0; k < pose_ranges[r].words; k++, w++) {
+                // The four LimbIKState blocks (R3 words 4..43): the dog's
+                // walking legs are IK-stepped by locomotion code inside
+                // behaviors, which the ghost never runs, so the peer's IK is
+                // the ghost's only source of leg motion. But writing it HERE
+                // (input time) loses to the engine's later idle micro-
+                // animation each frame -- the shimmer. So it's captured into
+                // a hold buffer and applied late-frame by the pre-render
+                // hook below, where we get the last word before drawing.
+                if (r == 2 && k >= 4) {
+                    ik_hold[k - 4] = (u16)io[IO_PEER_POSE + w];
+                    continue;
+                }
+                dst[k] = (u16)io[IO_PEER_POSE + w];
             }
         }
+        ik_hold_valid = 1;
         if (g->unk2FA == 0) g->unk2FA = 32;
         g->state = (u16)io[IO_PEER_POSE + 104];
         g->movementState = (u8)(io[IO_PEER_POSE + 105] & 0xFF);
         g->unk365 = (u8)((io[IO_PEER_POSE + 105] >> 8) & 0xFF);
+    }
+    if (debug_mode) {
+        u16* cur = (u16*)((u8*)g + 0x370);
+        s32 k;
+        for (k = 0; k < 40; k++) ik_written[k] = cur[k];
+        ik_written_valid = 1;
     }
     g->yRotation = io[15];
     g->aiFlags = 0;                          // belt-and-suspenders with the patch
@@ -615,12 +699,9 @@ void coop_frame_update(void) {
                                              // behavior dispatch patch keeps
                                              // its AI from ever running
 
-    if ((frame_counter % 60) == 0) {          // 2s heartbeat of ghost state
-        SSSVCoop_Debug(5, io[10]);            // peer species
-        SSSVCoop_Debug(6, io[IO_PEER_LEVEL]);
-        SSSVCoop_Debug(1, ghost_slot);
-        SSSVCoop_Debug(2, g->movementMode);
-        SSSVCoop_Debug(3, g->xPos >> 16);
-        SSSVCoop_Debug(4, g->yPos >> 16);
+    if (debug_mode && (frame_counter % 60) == 0) {  // 2s one-line status
+        SSSVCoop_GhostStatus((s32)((u16)ghost_slot) | (((s32)g->movementMode) << 16),
+                             g->xPos >> 16, g->yPos >> 16,
+                             (s32)((u16)io[10]) | (((s32)io[IO_PEER_LEVEL]) << 16));
     }
 }
