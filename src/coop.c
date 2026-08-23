@@ -304,6 +304,7 @@ static u8  ik_written_valid = 0;
 static u32 ik_fight_mask_lo = 0;   // accumulated changed-word mask (40 bits)
 static u32 ik_fight_mask_hi = 0;
 static s32 debug_mode = 0;
+static s32 evo_ghost_experiment = 0;
 
 #define IO_OWN_VALID   0
 #define IO_OWN_LEVEL   1
@@ -330,6 +331,7 @@ static void refresh_config(void) {
     s32 i;
     cached_mode = (s32)recomp_get_config_u32("mode");
     debug_mode  = (s32)recomp_get_config_u32("debug_logging");
+    evo_ghost_experiment = (s32)recomp_get_config_u32("evo_ghost");
     cached_port = (s32)recomp_get_config_double("port");
     ip = recomp_get_config_string("host_ip");
     if (ip != 0) {
@@ -411,6 +413,7 @@ static s32 species_is_evo(s16 id) {
 static s32 species_spawnable_here(s16 id) {
     s32 i;
     if (id < 0 || id > 67) return 0;
+    if (id == 63 && evo_ghost_experiment) return 1;  // experiment: real EVO
     if (id == 61 || id == 62 || id == 63 || id == 67) return 0;  // EVO family
     for (i = 0; i < gNumAnimalsInLevel && i < 50; i++) {
         if (gAnimalState.animals[i].species == &gAnimalState.speciesData[id][0]) {
@@ -539,7 +542,7 @@ void coop_frame_update(void) {
         // driving until they possess something (the species-change path then
         // despawns this body and spawns the new one).
         if (linked && species_is_evo(io[10])) {
-            if (ghost_valid()) {
+            if (ghost_valid() && !species_is_evo(ghost_species)) {
                 Animal* fg = &gAnimalState.animalPool[ghost_slot];
                 if (ik_hold_valid) {
                     ik_hold_valid = 0;
@@ -549,7 +552,18 @@ void coop_frame_update(void) {
                 }
                 return;  // frozen: engine idle-animates the vacated body
             }
-            return;  // no ghost to freeze; nothing to show for a soul
+            // EXPERIMENT (config-gated): no vacated body to show -- try
+            // representing the soul as a real EVO entity (species 63). The
+            // historical "EVO spawn crashes" predates the collision
+            // protocol, behavior kill-switch, and NORMAL-mode fixes; this
+            // tests whether it was ever specially cursed or just another
+            // victim of the since-fixed corruption. If it crashes, the dump
+            // tells us what the EVO needs that a bare spawn lacks.
+            if (!evo_ghost_experiment) {
+                return;  // experiment off: soul stays invisible
+            }
+            // fall through with the species forced to EVO (63)
+            io[10] = 63;
         }
 
         if (!(linked && species_spawnable_here(io[10]))) {

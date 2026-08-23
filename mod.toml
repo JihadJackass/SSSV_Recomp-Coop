@@ -2,7 +2,7 @@
 
 [manifest]
 id = "sssv_coop"
-version = "1.2.3"
+version = "1.3.0"
 display_name = "SSSV Co-op"
 description = """
 Two-player online co-op for Space Station Silicon Valley. Each player runs \
@@ -44,6 +44,14 @@ additional_files = [ ]
 id = "debug_logging"
 name = "Debug logging"
 description = "Writes detailed animation-sync diagnostics to coop_log.txt. Leave Off for normal play."
+type = "Enum"
+options = [ "Off", "On" ]
+default = "Off"
+
+[[manifest.config_options]]
+id = "evo_ghost"
+name = "EVO ghost (experimental)"
+description = "Shows the other player as a real EVO soul while they are between animals. Experimental: if the game crashes when your co-op partner leaves an animal, turn this back Off and report it."
 type = "Enum"
 options = [ "Off", "On" ]
 default = "Off"

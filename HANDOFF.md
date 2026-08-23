@@ -3,6 +3,17 @@ Updated: Aug 2026, current build 1.2.0. Purpose: resume development in a
 fresh conversation with zero knowledge loss. Give this file plus the project
 zip to the assistant.
 
+## How to resume (fresh conversation quickstart)
+1. Read this file fully. The zip contains complete current source.
+2. Rebuild environment: clone mkst/sssv (decomp reference) and
+   Cellenseres/SSSV_Recomp with SSSVRecompSyms; apt install clang-18 lld-18
+   gcc-mingw-w64-x86-64; download RecompModTool from
+   github.com/N64Recomp/N64Recomp/releases/tag/mod-tool-release.
+3. Current version 1.3.0, wire protocol v3. Bump protocol on wire changes.
+4. IMMEDIATE TASK: Phase 3 (host-selected missions). See "Phase 3 notes".
+5. STANDING INSTRUCTION FROM USER: once Phase 3 is basically ready, remind
+   them ("call me out") to run the deferred validation batch (below).
+
 ## What this is
 Two-player online co-op mod for Space Station Silicon Valley: Recompiled
 (Cellenseres/SSSV_Recomp, an N64Recomp static-recompilation PC port).
@@ -109,11 +120,43 @@ roadmap ends in host-authoritative shared enemy simulation.
 2. Head-turn does not follow peer (idle look-around + blink work, directed
    turn does not). Not in synced ranges or IK blocks. Suspect player-
    control path or 0x306-0x312 semantics. Consider same late-frame apply.
-2b. Soul itself invisible while peer is EVO (by design: EVO spawn = crash).
-   Polish idea: sparkle/effect marker at peer position during soul state.
+2b. EVO soul visibility: 1.3.0 adds config-gated experiment "evo_ghost"
+   (default Off): with no vacated body present, spawn the soul as a real
+   EVO entity (species 63; spawnability gate bypassed only under the flag).
+   Hypothesis: the historical EVO-spawn crash was the since-fixed collision
+   corruption, not EVO-specific. If it survives -> build proper DUAL-ghost
+   (vacated body frozen + soul entity simultaneously; needs 2nd slot
+   tracking). If it crashes -> dump reveals missing EVO init. User goal:
+   full single-player parity (body + visible soul). User is willing to
+   fork/extend SSSV_Recomp itself (F4SE-style) if the mod toolkit hits a
+   wall; agreed policy: fork only on proven impossibility (most likely
+   candidate: Phase 4 needs). Vacated-body physics: freeze stops network
+   driving only; engine physics (water bobbing, gravity, shoves) still
+   runs -- verify with a water body test.
 3. Jump anticipation pose imperfect (tuck vs squash) - reevaluate after 1.
-4. Phase 3: host-selected missions. init_level @ 0x802961D4 in syms;
-   broadcast gGameState.level + hook to auto-load on client. Design TBD.
+4. == CURRENT TASK == Phase 3: host-selected missions.
+   Known: init_level @ 0x802961D4 (in syms) reads gGameState.level
+   (0x803F2D30 +0x8) and mirrors it to D_80204280; the ship hub is where
+   levels get selected. Research entry points: callers of init_level, the
+   ship's level-select flow, and whatever state flag triggers ship->level
+   transition. Design sketch: new wire msg (bump proto to v4) "host entered
+   level N"; client, when on the ship/any level, sets its own level target
+   and triggers the same transition the ship UI uses. Keep it tolerant:
+   if the client is mid-level, queue until they return to ship, or prompt
+   via SFX. Also acceptable v1: client auto-loads only from the ship.
+   IMPORTANT: design so partial validation works with minimal two-machine
+   time (see testing-burden note).
+
+4b. DEFERRED VALIDATION BATCH (user request: run once Phase 3 is basically
+   ready -- REMIND THEM PROACTIVELY at that point):
+   - 1.2.3 soul-freeze: vacated body persists + idles when peer goes EVO;
+     re-entry resumes; body-in-WATER still bobs (engine physics through
+     freeze is the design; verify reality).
+   - 1.3.0 EVO experiment: Configure > "EVO ghost (experimental)" On (both
+     machines); peer floats as soul with no vacated body; either a visible
+     EVO drifts (-> build dual-ghost: frozen body + soul simultaneously,
+     needs 2nd slot tracking) or it crashes (-> dump names missing init).
+   - Phase 3 itself end-to-end.
 5. Phase 4/5: host-authoritative world mirror (suppress client behaviors
    via the same dispatch patch, mirror all slots, combat events, enemies
    target both players via the "get player position" helpers). User WANTS
@@ -121,6 +164,14 @@ roadmap ends in host-authoritative shared enemy simulation.
 6. Parked: PvP damage transfer config (Off/cosmetic/full), possession-of-
    ghost experiment (never tested), Radmin polish (interpolation), death
    effect could use proper explosion instead of dizzy stars.
+
+## Testing-burden note (important)
+The user runs host PC + spare laptop for every test and finds constant
+two-machine cycles burdensome. Therefore: batch related changes where risk
+allows (relaxing the strict one-change rule when changes are independent),
+prefer designs partially verifiable on one machine, only request debug
+captures when they will be decisive, and consolidate test requests into
+single clear checklists per session.
 
 ## Working protocol with the user
 One change per build, versioned x.y.z (their scheme), both machines updated
