@@ -1,5 +1,5 @@
 # SSSV Co-op - Project Handoff / Status Document
-Updated: Aug 2026, current build 1.4.1. Purpose: resume development in a
+Updated: Aug 2026, current build 1.4.2 (safe mode). Purpose: resume development in a
 fresh conversation with zero knowledge loss. Give this file plus the project
 zip to the assistant.
 
@@ -9,18 +9,33 @@ zip to the assistant.
    Cellenseres/SSSV_Recomp with SSSVRecompSyms; apt install clang-18 lld-18
    gcc-mingw-w64-x86-64; download RecompModTool from
    github.com/N64Recomp/N64Recomp/releases/tag/mod-tool-release.
-3. Current version 1.4.1, wire protocol v4 (unchanged from 1.4.0). Bump protocol on wire changes.
-4. IMMEDIATE TASK: 1.4.0 CRASHED the HOST (crash to desktop, no dump) at
-   ship->level entry while connected, client idle at bank select. 1.4.1 is
-   the diagnostic build: SYS breadcrumbs log every gOverlayMenuState
-   unk0/unk18 change ("menu: active=A state=S"), own level entries, and
-   MISSION branches with the menu state; chirps no longer fire from menu
-   context (new-in-1.4.0 audio surface, removed defensively); config
-   "menu_link" (Ship link + mission sync, default On) is a kill-switch
-   reverting to 1.3.0 hooks-in-gameplay-only for bisection. Next crash log
-   pinpoints the frame; if crash persists with menu_link Off, suspects are
-   the gameplay-side additions (trio io / native MSG_LEVEL), else the
-   menu-tick surface.
+3. Current version 1.4.2, wire protocol v4 (unchanged). SAFE-MODE BUILD.
+   Bump protocol on wire changes.
+4. IMMEDIATE TASK: 1.4.1's diagnostic build ISOLATED the bug. Host crashed
+   solo, unconnected, menu_link runtime kill-switch OFF -- i.e. coop_tick's
+   body never ran -- yet it still crashed mid ship-menu navigation (last
+   breadcrumb: state 13, the level-load transition). That rules out
+   everything the runtime flag gated and points at
+   RECOMP_HOOK("func_8038FF68_7A1618") itself: a RECOMP_HOOK patches the
+   target's code at mod-load time regardless of any runtime flag, so a bad
+   patch on that symbol crashes on ordinary menu use with zero peer.
+   1.4.2 physically removes that hook (#if 0, not just gated) -- the mod is
+   now binary-identical to 1.3.0 on the game-loop side. Presence co-op,
+   pose sync, EVO experiment untouched; mission-follow is inert (menu_link
+   config option is now a no-op, left in place for later). CONFIRM 1.4.2
+   is stable solo before reconnecting the client. If 1.4.2 still crashes at
+   the same state 13 point, the hook was NOT the cause and something else
+   changed under Phase 3 -- re-open investigation from scratch, starting
+   with a byte-diff of the pre/post-Phase-3 mod.elf around that call site.
+   If 1.4.2 is stable: the real fix is finding out why hooking
+   func_8038FF68_7A1618 is unsafe -- candidates: wrong assumed signature
+   (verify against N64Recomp's hook codegen for a 0x1AD0-byte function),
+   reentrancy (does this function call itself or get called from an
+   overlay context RECOMP_HOOK does not support), or a RecompModTool /
+   symbol-table issue specific to this address. Needs isolated single-
+   variable testing: reintroduce ONLY the hook with an EMPTY body (no
+   coop_tick call at all) and confirm whether that alone reproduces the
+   crash before touching any Phase 3 logic again.
 5. After validation: Phase 4/5 research (host-authoritative world mirror).
 
 ## What this is

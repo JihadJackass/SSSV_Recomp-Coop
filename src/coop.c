@@ -517,17 +517,25 @@ static s32 ghost_valid(void) {
     return 1;
 }
 
-// The main loop is `if (menu active) func_8038FF68_7A1618() else { ...
-// get_controller_input() ... }` -- the two branches are mutually exclusive,
-// so hooking BOTH runs the tick exactly once per frame everywhere: in
-// levels (as before) and now also on the ship and in pause menus. That is
-// what lets the client follow the host from the ship, and as a side effect
-// the connection no longer times out while sitting in menus.
+// SUSPENDED 1.4.2: the hook below was removed after 1.4.1 crashed the host
+// mid-menu-navigation (state 13, ship's own level-load transition) with
+// zero peer connection and the menu_link runtime kill-switch OFF -- i.e.
+// with coop_menu_update's body never executing. That rules out the tick
+// logic and points at RECOMP_HOOK("func_8038FF68_7A1618") itself: a
+// RECOMP_HOOK patches the target function's code the moment the mod loads,
+// independent of any runtime flag, so a bad patch on that symbol would
+// crash on ordinary menu navigation with no peer -- exactly what was
+// reported. This build removes the hook declaration entirely (not just the
+// runtime gate) so the mod is binary-identical to 1.3.0 on the game-loop
+// side while the real cause is investigated. Mission-follow (Phase 3) is
+// therefore inert in this build; presence co-op, pose sync, and the EVO
+// experiment are unaffected -- none of them touch this hook.
 static void coop_tick(void);
 
 RECOMP_HOOK("get_controller_input")
 void coop_frame_update(void) { coop_tick(); }
 
+#if 0
 RECOMP_HOOK("func_8038FF68_7A1618")
 void coop_menu_update(void) {
     static s32 announced = 0;
@@ -535,6 +543,7 @@ void coop_menu_update(void) {
     if (!announced) { announced = 1; SSSVCoop_Debug(21, 0); }
     coop_tick();
 }
+#endif
 
 static void coop_tick(void) {
     static s32 prev_connected = 0;

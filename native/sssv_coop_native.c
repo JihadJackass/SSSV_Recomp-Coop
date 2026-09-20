@@ -240,7 +240,7 @@ static void coop_on_load(void) {
         fprintf(g_log, "\n============================================================\n");
         fflush(g_log);
     }
-    coop_logc(LC_SYS, "SSSV Co-op native loaded  (build 1.4.1, proto v4)  -- session start");
+    coop_logc(LC_SYS, "SSSV Co-op native loaded  (build 1.4.2, proto v4, mission-follow SUSPENDED)  -- session start");
 }
 #endif
 

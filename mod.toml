@@ -2,7 +2,7 @@
 
 [manifest]
 id = "sssv_coop"
-version = "1.4.1"
+version = "1.4.2"
 display_name = "SSSV Co-op"
 description = """
 Two-player online co-op for Space Station Silicon Valley. Each player runs \
