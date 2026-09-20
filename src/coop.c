@@ -306,6 +306,9 @@ static u32 ik_fight_mask_lo = 0;   // accumulated changed-word mask (40 bits)
 static u32 ik_fight_mask_hi = 0;
 static s32 debug_mode = 0;
 static s32 evo_ghost_experiment = 0;
+static s32 menu_link = 1;   // "Ship link + mission sync": Off reverts to
+                            // 1.3.0 behavior (tick only in gameplay, no
+                            // follow) -- the Phase 3 crash kill-switch.
 
 #define IO_OWN_VALID   0
 #define IO_OWN_LEVEL   1
@@ -414,6 +417,7 @@ static void refresh_config(void) {
     cached_mode = (s32)recomp_get_config_u32("mode");
     debug_mode  = (s32)recomp_get_config_u32("debug_logging");
     evo_ghost_experiment = (s32)recomp_get_config_u32("evo_ghost");
+    menu_link = (s32)recomp_get_config_u32("menu_link");
     cached_port = (s32)recomp_get_config_double("port");
     ip = recomp_get_config_string("host_ip");
     if (ip != 0) {
@@ -525,7 +529,12 @@ RECOMP_HOOK("get_controller_input")
 void coop_frame_update(void) { coop_tick(); }
 
 RECOMP_HOOK("func_8038FF68_7A1618")
-void coop_menu_update(void) { coop_tick(); }
+void coop_menu_update(void) {
+    static s32 announced = 0;
+    if (!menu_link) return;          // kill-switch: 1.3.0-style behavior
+    if (!announced) { announced = 1; SSSVCoop_Debug(21, 0); }
+    coop_tick();
+}
 
 static void coop_tick(void) {
     static s32 prev_connected = 0;
@@ -537,6 +546,19 @@ static void coop_tick(void) {
 
     if ((frame_counter % 30) == 0) refresh_config();
     frame_counter++;
+
+    // Menu timeline breadcrumbs: log every change of the menu-active flag
+    // and the menu state machine. Menu states change at human speed, so
+    // this is cheap, and it brackets any crash in the ship->level
+    // transition to an exact spot in the flow.
+    {
+        static s16 bc_unk0 = -1, bc_unk18 = -1;
+        if (gOverlayMenuState.unk0 != bc_unk0 || gOverlayMenuState.unk18 != bc_unk18) {
+            bc_unk0 = gOverlayMenuState.unk0;
+            bc_unk18 = gOverlayMenuState.unk18;
+            SSSVCoop_Debug(22, (s32)((u16)bc_unk0) | (((s32)bc_unk18) << 16));
+        }
+    }
     if (respawn_cooldown > 0) respawn_cooldown--;
 
     // ---- Corpse cleanup ---------------------------------------------------
@@ -615,10 +637,13 @@ static void coop_tick(void) {
     // ---- Pump network -----------------------------------------------------
     status = SSSVCoop_Update(cached_mode, cached_ip, cached_port, io);
     connected = (status == COOP_STATUS_CONNECTED) ? 1 : 0;
+    // Chirps only from in-level context: the menu tick made it possible to
+    // call the in-game SFX path while the menu sound state is active, which
+    // is untested territory -- the status line in the log covers menus.
     if (connected && !prev_connected) {
-        func_8032C508_73DBB8(SFX_MENU_NAVIGATE_UP, 0x4000, 0, 1.0f);
+        if (gOverlayMenuState.unk0 == 0) func_8032C508_73DBB8(SFX_MENU_NAVIGATE_UP, 0x4000, 0, 1.0f);
     } else if (!connected && prev_connected) {
-        func_8032C508_73DBB8(SFX_MENU_NAVIGATE_DOWN, 0x4000, 0, 1.0f);
+        if (gOverlayMenuState.unk0 == 0) func_8032C508_73DBB8(SFX_MENU_NAVIGATE_DOWN, 0x4000, 0, 1.0f);
     }
     prev_connected = connected;
 
@@ -627,14 +652,17 @@ static void coop_tick(void) {
         s32 in_level = (gOverlayMenuState.unk0 == 0) &&
                        own_level >= LEVEL_FIRST_PLAYABLE &&
                        own_level <= LEVEL_LAST_PLAYABLE;
-        if (in_level && !was_in_level) own_epoch++;   // each level ENTRY,
-        was_in_level = (s16)in_level;                 // including replays
+        if (in_level && !was_in_level) {              // each level ENTRY,
+            own_epoch++;                              // including replays
+            SSSVCoop_Debug(20, (s32)((u16)own_level) | (((s32)own_epoch) << 16));
+        }
+        was_in_level = (s16)in_level;
         io[IO_OWN_MLEVEL]  = own_level;
         io[IO_OWN_INLEVEL] = (s16)in_level;
         io[IO_OWN_EPOCH]   = own_epoch;
 
         // Join side only: each host level entry (epoch) is handled once.
-        if (cached_mode == 2 && connected &&
+        if (menu_link && cached_mode == 2 && connected &&
             io[IO_PEER_INLEVEL] && io[IO_PEER_EPOCH] != followed_epoch) {
             s16 target = io[IO_PEER_MLEVEL];
             if (target < LEVEL_FIRST_PLAYABLE || target > LEVEL_LAST_PLAYABLE) {
@@ -646,8 +674,9 @@ static void coop_tick(void) {
                         gOverlayMenuState.unk18 == MENU_STATE_MISSION_BRIEF)) {
                 // On the ship at an interactive screen: follow the host.
                 followed_epoch = io[IO_PEER_EPOCH];
-                SSSVCoop_Debug(16, target);
+                SSSVCoop_Debug(16, (s32)((u16)target) | (((s32)gOverlayMenuState.unk18) << 16));
                 coop_load_level(target);
+                SSSVCoop_Debug(19, target);   // load returned cleanly
                 return;  // world resets under us; next tick re-syncs via
                          // the own-level-change path
             } else if (prompted_epoch != io[IO_PEER_EPOCH]) {
@@ -655,8 +684,10 @@ static void coop_tick(void) {
                 // Chirp once so they know, keep the epoch queued; the load
                 // fires automatically when they reach the ship.
                 prompted_epoch = io[IO_PEER_EPOCH];
-                SSSVCoop_Debug(17, target);
-                func_8032C508_73DBB8(SFX_MENU_NAVIGATE_UP, 0x4000, 0, 1.0f);
+                SSSVCoop_Debug(17, (s32)((u16)target) | (((s32)gOverlayMenuState.unk18) << 16));
+                if (gOverlayMenuState.unk0 == 0) {
+                    func_8032C508_73DBB8(SFX_MENU_NAVIGATE_UP, 0x4000, 0, 1.0f);
+                }
             }
         }
     }

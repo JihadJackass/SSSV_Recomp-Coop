@@ -1,5 +1,5 @@
 # SSSV Co-op - Project Handoff / Status Document
-Updated: Aug 2026, current build 1.2.0. Purpose: resume development in a
+Updated: Aug 2026, current build 1.4.1. Purpose: resume development in a
 fresh conversation with zero knowledge loss. Give this file plus the project
 zip to the assistant.
 
@@ -9,9 +9,18 @@ zip to the assistant.
    Cellenseres/SSSV_Recomp with SSSVRecompSyms; apt install clang-18 lld-18
    gcc-mingw-w64-x86-64; download RecompModTool from
    github.com/N64Recomp/N64Recomp/releases/tag/mod-tool-release.
-3. Current version 1.4.0, wire protocol v4. Bump protocol on wire changes.
-4. IMMEDIATE TASK: run the deferred validation batch (item 4b below), which
-   now includes Phase 3 end-to-end. Phase 3 is IMPLEMENTED, UNTESTED.
+3. Current version 1.4.1, wire protocol v4 (unchanged from 1.4.0). Bump protocol on wire changes.
+4. IMMEDIATE TASK: 1.4.0 CRASHED the HOST (crash to desktop, no dump) at
+   ship->level entry while connected, client idle at bank select. 1.4.1 is
+   the diagnostic build: SYS breadcrumbs log every gOverlayMenuState
+   unk0/unk18 change ("menu: active=A state=S"), own level entries, and
+   MISSION branches with the menu state; chirps no longer fire from menu
+   context (new-in-1.4.0 audio surface, removed defensively); config
+   "menu_link" (Ship link + mission sync, default On) is a kill-switch
+   reverting to 1.3.0 hooks-in-gameplay-only for bisection. Next crash log
+   pinpoints the frame; if crash persists with menu_link Off, suspects are
+   the gameplay-side additions (trio io / native MSG_LEVEL), else the
+   menu-tick surface.
 5. After validation: Phase 4/5 research (host-authoritative world mirror).
 
 ## What this is

@@ -240,7 +240,7 @@ static void coop_on_load(void) {
         fprintf(g_log, "\n============================================================\n");
         fflush(g_log);
     }
-    coop_logc(LC_SYS, "SSSV Co-op native loaded  (build 1.2.2)  -- session start");
+    coop_logc(LC_SYS, "SSSV Co-op native loaded  (build 1.4.1, proto v4)  -- session start");
 }
 #endif
 
@@ -459,8 +459,16 @@ EXPORT void SSSVCoop_Debug(uint8_t* rdram, recomp_context* ctx) {
     case 13: coop_logc(LC_GHOST, "species %d", v); break;
     case 14: coop_logc(LC_GHOST, "killed by engine (mode %d), letting death play out", v); break;
     case 15: coop_logc(LC_GHOST, "corpse cleaned, slot %d freed", v); break;
-    case 16: coop_logc(LC_SYS,   "MISSION: following host into level %d", v); break;
-    case 17: coop_logc(LC_SYS,   "MISSION: host selected level %d; will follow from the ship", v); break;
+    case 16: coop_logc(LC_SYS,   "MISSION: following host into level %d (from menu state %d)",
+                       (int16_t)(v & 0xFFFF), (int16_t)((v >> 16) & 0xFFFF)); break;
+    case 17: coop_logc(LC_SYS,   "MISSION: host selected level %d; queued (menu state %d)",
+                       (int16_t)(v & 0xFFFF), (int16_t)((v >> 16) & 0xFFFF)); break;
+    case 19: coop_logc(LC_SYS,   "MISSION: level %d load returned cleanly", v); break;
+    case 20: coop_logc(LC_SYS,   "entered level %d (own epoch %d)",
+                       (int16_t)(v & 0xFFFF), (int16_t)((v >> 16) & 0xFFFF)); break;
+    case 21: coop_logc(LC_SYS,   "menu-context tick active (ship link on)"); break;
+    case 22: coop_logc(LC_SYS,   "menu: active=%d state=%d",
+                       (int16_t)(v & 0xFFFF), (int16_t)((v >> 16) & 0xFFFF)); break;
     default: coop_logc(LC_GHOST, "event %d = %d", tag, v); break;
     }
 }
